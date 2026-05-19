@@ -1,4 +1,5 @@
 # Excel AI Platform
+<img width="759" height="473" alt="image" src="https://github.com/user-attachments/assets/d42e1fb1-a688-4eb6-b163-428f587a5d28" />
 
 엑셀·CSV 파일을 업로드하고 AI와 대화하면서 데이터를 분석·변환·병합하는 Streamlit 기반 대화형 앱입니다.
 
@@ -75,26 +76,8 @@ excel-platform/
 사용자가 짧게 입력해도 앱이 자동으로 맥락을 파악해서 LLM에 풍부한 프롬프트를 전달합니다.
 코드 생성은 수단이고, 자연스러운 대화가 목적입니다.
 
-```mermaid
-flowchart TD
-    A[사용자 입력] --> B[의도 감지\ndetect_intent]
-    B --> C{의도 분류}
-    C -->|filter / aggregate\ntransform / export| D[engineer 페르소나]
-    C -->|merge| E[merger 페르소나]
-    C -->|analyze / query| F[analyst 페르소나]
-    D & E & F --> G[프롬프트 보강\naugment_user_prompt]
-    G --> H[시스템 프롬프트 조합\nbuild_system_prompt]
-    H --> I[LLM 스트리밍]
-    I --> J[응답 표시]
-    J --> K{코드 블록\n포함?}
-    K -->|Yes| L[▶ 코드 실행 버튼]
-    K -->|No| M[대화 종료]
-    L --> N[샌드박스 실행\nexecute]
-    N --> O{성공?}
-    O -->|Yes| P[result_df 저장\nlast_result 갱신]
-    O -->|No| Q[오류 표시]
-    P --> R[DataFrame 표시\n+ 다운로드 버튼]
-```
+<img width="766" height="512" alt="image" src="https://github.com/user-attachments/assets/caf235b7-c1f9-44d4-b6ff-136c8c1d66fe" />
+
 
 ### 2. 동적 프롬프트 파이프라인 (`prompt_builder.py`)
 
