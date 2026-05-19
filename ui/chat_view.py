@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -24,7 +25,7 @@ def render_code_controls(msg_idx: int, content: str) -> None:
         if exec_result.success:
             with st.container(border=True):
                 rtype = exec_result.result_type
-                if rtype == "dataframe" and exec_result.result_df is not None:
+                if exec_result.result_df is not None:
                     df = exec_result.result_df
                     row_h = min(400, max(120, len(df) * 35 + 40))
                     st.dataframe(df, use_container_width=True, height=row_h)
@@ -36,6 +37,10 @@ def render_code_controls(msg_idx: int, content: str) -> None:
                     st.metric(label="결과", value=fmt)
                 elif rtype == "string" and exec_result.result_value is not None:
                     st.markdown(str(exec_result.result_value))
+                elif rtype == "plot" and exec_result.result_value:
+                    chart_path = Path(str(exec_result.result_value))
+                    if chart_path.exists():
+                        st.image(str(chart_path), use_container_width=True)
                 if exec_result.output:
                     st.code(exec_result.output, language="text")
                 for sfname in exec_result.saved_files:
@@ -47,7 +52,17 @@ def render_code_controls(msg_idx: int, content: str) -> None:
                             file_name=sfname,
                             key=f"dl_exec_{sfname}_{msg_idx}",
                         )
-                st.caption("✓ 실행 완료")
+                if (
+                    exec_result.result_df is None
+                    and not exec_result.saved_files
+                    and exec_result.result_type not in ("number", "string", "plot")
+                ):
+                    st.info(
+                        "실행은 완료됐지만 저장할 표(result)가 없습니다. "
+                        "코드에 `result = ...`가 포함되어 있는지 확인한 뒤 다시 실행해 주세요."
+                    )
+                label = "↩ 자동 수정 후 실행 완료" if exec_result.is_corrected else "✓ 실행 완료"
+                st.caption(label)
         else:
             st.error(f"실행 오류:\n{exec_result.error}")
         return
@@ -64,6 +79,12 @@ def render_code_controls(msg_idx: int, content: str) -> None:
             if result.success and result.result_df is not None:
                 st.session_state.last_result = result.result_df
                 st.session_state.result_history.append(result.result_df)
+            elif not result.success:
+                st.session_state.correction_needed[msg_idx] = {
+                    "code": code_blocks[0],
+                    "error": result.error,
+                    "attempt": 1,
+                }
             st.rerun()
 
 

@@ -164,6 +164,7 @@ def render_sidebar() -> None:
                 st.session_state.result_history = []
                 st.session_state.last_intent = None
                 st.session_state.suggestions = {}
+                st.session_state.correction_needed = {}
                 st.rerun()
         with col_exp:
             if st.session_state.messages:

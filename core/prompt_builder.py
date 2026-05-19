@@ -15,7 +15,8 @@ _INTENT_MAP: dict[str, list[str]] = {
     "transform": ["변환", "바꿔", "수정", "추가", "삭제", "정렬", "rename",
                   "컬럼 추가", "열 추가", "파생", "계산", "나눠", "곱해", "새 컬럼"],
     "analyze":   ["분석", "통계", "요약", "insight", "패턴", "트렌드", "분포",
-                  "상관", "describe", "파악", "살펴", "어떻게 돼", "어떤 데이터"],
+                  "상관", "describe", "파악", "살펴", "어떻게 돼", "어떤 데이터",
+                  "차트", "그래프", "시각화", "그려줘", "막대", "선 그래프", "파이"],
     "export":    ["저장", "다운로드", "내보내기", "엑셀로", "csv로", "파일로"],
     "query":     ["뭐야", "알려줘", "몇개", "얼마나", "어떤", "보여줘", "있어",
                   "컬럼", "행", "열", "크기", "형태", "뭐가"],
@@ -59,7 +60,6 @@ _PERSONAS: dict[str, str] = {
 - 단순한 질문(컬럼 목록, 행 수 등)은 코드 없이 파일 정보에서 바로 답합니다.
 - 응답은 핵심 2가지 이내로 간결하게 작성합니다. 섹션을 여러 개 나누지 마세요.
 - 이모지를 헤더나 항목 앞에 붙이지 마세요.
-- 시각화(차트, 그래프)는 지원하지 않으므로 언급하지 마세요.
 - "다음 단계 제안" 섹션을 응답 안에 직접 작성하지 마세요.
 
 ## 수치 표시 규칙 (필수)
@@ -86,7 +86,6 @@ _PERSONAS: dict[str, str] = {
 - 결측치·타입 불일치 등 엣지케이스를 먼저 고려합니다.
 - 조건이 모호하면 구체적인 선택지를 제시하고 기다립니다.
 - 이모지를 헤더나 항목 앞에 붙이지 마세요.
-- 시각화(차트, 그래프)는 지원하지 않으므로 언급하지 마세요.
 - "다음 단계 제안" 섹션을 응답 안에 직접 작성하지 마세요.
 
 ## 작업 방법론
@@ -106,7 +105,6 @@ _PERSONAS: dict[str, str] = {
 - 컬럼명이 조금 달라도 의미가 같으면 자동으로 정규화를 제안합니다.
 - 병합 결과의 행 수 변화(늘었는지 줄었는지)를 반드시 설명합니다.
 - 이모지를 헤더나 항목 앞에 붙이지 마세요.
-- 시각화(차트, 그래프)는 지원하지 않으므로 언급하지 마세요.
 - "다음 단계 제안" 섹션을 응답 안에 직접 작성하지 마세요.
 
 ## 작업 방법론
@@ -114,7 +112,9 @@ _PERSONAS: dict[str, str] = {
 2. 키 컬럼 모호하면 → 공통 컬럼 목록 보여주고 선택 유도
 3. 중복 처리 방식(합계/평균/첫 번째 값) 확인 후 코드 작성
 4. 병합 후 → 원본 행 수 vs 결과 행 수 비교 설명
-5. 결과는 반드시 save()로 저장 안내""",
+5. 실행 코드 블록에는 반드시 `result = <결과 DataFrame>` 후 `save("파일명.xlsx")` 명시적 호출
+   → save()를 호출하지 않으면 의미 없는 타임스탬프 파일명으로 저장됨
+   (print로 컬럼만 찍고 끝내지 말 것)""",
 }
 
 # endregion
@@ -128,6 +128,7 @@ _CODE_RULES = """\
 ### 변수 환경
 - `files` : {파일명: DataFrame} 딕셔너리 — 이미 로드 완료
 - `pd`, `np` : 이미 주입됨 — 별도 import 없이 바로 사용
+- `plt`, `matplotlib` : 이미 주입됨 — 별도 import 없이 바로 사용
 - `last_result` : 직전 실행 결과 DataFrame (없으면 None)
 - `save("이름.xlsx")` : 결과 파일 저장 함수
 - `print()` : 중간 출력용
@@ -163,7 +164,10 @@ result = pd.DataFrame(rows)
 - DataFrame → `result = df` (기본, 항상 사용)
 - 숫자 하나 → `result = {"type": "number", "value": 1234}`
 - 텍스트 설명 → `result = {"type": "string", "value": "매출 총합: 3,200만원"}`
-- 최종 결과는 반드시 `result = ...`에 저장 (print()만 쓰면 결과가 UI에 표시되지 않음)"""
+- 차트 → `result = {"type": "plot", "value": fig}` (fig = plt.subplots()의 첫 번째 반환값)
+- 최종 결과는 반드시 `result = ...`에 저장 (print()만 쓰면 표·다운로드가 나오지 않음)
+- 파일명을 지정하려면 `result = df` 이후에 `save("파일명.xlsx")` 호출 (순서 중요: result 먼저, save 나중)
+  → save()를 생략하면 타임스탬프 파일명(result_YYYYMMDD_HHMMSS.xlsx)으로 자동 저장됨"""
 
 # endregion
 
@@ -351,6 +355,30 @@ for col in df.select_dtypes(include="number").columns:
 result = pd.DataFrame(rows)
 ```
 
+사용자: "막대 차트 그려줘" / "추세 그래프 보여줘"
+어시스턴트: plt로 차트를 생성하고 fig를 plot 타입으로 반환합니다.
+```python
+df = files["{FILE_A}"]
+fig, ax = plt.subplots(figsize=(10, 5))
+df.groupby("기준컬럼")["숫자컬럼"].sum().plot(kind="bar", ax=ax, color="steelblue")
+ax.set_title("기준컬럼별 숫자컬럼 합계")
+ax.set_xlabel("")
+plt.xticks(rotation=45, ha="right")
+plt.tight_layout()
+result = {"type": "plot", "value": fig}
+```
+
+사용자: "선 그래프로 추세 보여줘"
+어시스턴트:
+```python
+df = files["{FILE_A}"]
+fig, ax = plt.subplots(figsize=(10, 4))
+df.plot(x="날짜컬럼", y="숫자컬럼", ax=ax, marker="o")
+ax.set_title("시계열 추세")
+plt.tight_layout()
+result = {"type": "plot", "value": fig}
+```
+
 사용자: "파일들 분석해줘" / "데이터 파악해줘" (파일이 여러 개일 때)
 어시스턴트: 파일별 구조를 먼저 정리하고 공통점·차이점을 짚어줍니다.
 
@@ -380,16 +408,19 @@ if len(names) >= 2:
     print(f"공통 컬럼 {len(common)}개: {', '.join(sorted(common))}")
 ```""",
         "compact": """\
-## 분석 코드 패턴 (describe 대신 구조화된 테이블 사용)
+## 분석 코드 패턴
 ```python
 df = files["{FILE_A}"]
-missing = df.isnull().sum()
-missing = missing[missing > 0]
+# 요약 테이블 (describe 대신)
+missing = df.isnull().sum(); missing = missing[missing > 0]
 num_cols = df.select_dtypes(include="number").columns.tolist()
-result = pd.DataFrame({
-    "항목": ["행수", "열수", "결측 컬럼수", "수치형 컬럼수"],
-    "값": [len(df), len(df.columns), len(missing), len(num_cols)],
-})
+result = pd.DataFrame({"항목": ["행수","열수","결측컬럼수","수치형컬럼수"],
+                        "값": [len(df), len(df.columns), len(missing), len(num_cols)]})
+# 차트
+fig, ax = plt.subplots(figsize=(10, 5))
+df.groupby("기준컬럼")["숫자컬럼"].sum().plot(kind="bar", ax=ax)
+plt.tight_layout()
+result = {"type": "plot", "value": fig}
 ```""",
     },
 
@@ -476,6 +507,36 @@ def detect_intent(prompt: str) -> str:
 
 # region ── 프롬프트 조합 ──────────────────────────────────────────────────────
 
+_DTYPE_LABEL: dict[str, str] = {
+    "int":         "정수",
+    "float":       "실수",
+    "bool":        "불리언",
+    "datetime":    "날짜",
+    "timedelta":   "기간",
+    "category":    "카테고리",
+    "object":      "문자열",
+    "string":      "문자열",
+}
+
+
+def _dtype_label(dtype_str: str, is_mixed: bool = False) -> str:
+    """pandas dtype → 한국어 의미 타입. mixed_type이면 '혼합(수치)' 반환."""
+    if is_mixed:
+        return "혼합(수치)"
+    s = str(dtype_str).lower()
+    for prefix, label in _DTYPE_LABEL.items():
+        if s.startswith(prefix):
+            return label
+    return ""
+
+
+def _fmt_num(v: float) -> str:
+    """숫자를 천 단위 구분자로 읽기 좋게 포맷."""
+    if abs(v) >= 1000:
+        return f"{v:,.0f}"
+    return f"{v:.2f}".rstrip("0").rstrip(".")
+
+
 def _summarize_files(files_info: list[dict]) -> str:
     if not files_info:
         return "현재 업로드된 파일이 없습니다."
@@ -487,14 +548,56 @@ def _summarize_files(files_info: list[dict]) -> str:
             if cnt > 0
         ]
         null_note = f" | 결측치: {', '.join(null_cols)}" if null_cols else ""
+
+        dtypes = f.get("dtypes", {})
+        mixed = set(f.get("mixed_type_cols", []))
+        col_parts = []
+        for col in f["col_names"]:
+            label = _dtype_label(dtypes.get(col, ""), col in mixed)
+            col_parts.append(f"{col}({label})" if label else col)
+
         lines.append(
             f"  - {f['name']} : {f['rows']}행 × {f['columns']}열"
-            f" | 컬럼: {', '.join(f['col_names'])}{null_note}"
+            f" | 컬럼: {', '.join(col_parts)}{null_note}"
         )
         if f.get("head_sample") and f["head_sample"]:
             first = f["head_sample"][0]
             pairs = [f"{k}={repr(v)}" for k, v in list(first.items())[:5]]
             lines.append(f"    샘플(1행): {', '.join(pairs)}")
+        if f.get("numeric_stats"):
+            parts = []
+            for col, s in list(f["numeric_stats"].items())[:6]:
+                parts.append(
+                    f"{col}[min={_fmt_num(s['min'])} / "
+                    f"평균={_fmt_num(s['mean'])} / "
+                    f"max={_fmt_num(s['max'])}]"
+                )
+            lines.append(f"    수치형 통계: {', '.join(parts)}")
+        if f.get("string_stats"):
+            parts = []
+            for col, s in list(f["string_stats"].items())[:5]:
+                top_str = ", ".join(s["top"])
+                parts.append(f"{col}({s['unique']}종: {top_str})")
+            lines.append(f"    범주형 컬럼: {', '.join(parts)}")
+    return "\n".join(lines)
+
+
+def _format_recent_conversation(messages: list[dict], max_turns: int = 3) -> str:
+    """최근 N턴(user+assistant 쌍)을 시스템 프롬프트용 텍스트로 압축.
+
+    마지막 메시지(현재 처리 중인 user 메시지)는 제외하고,
+    그 이전 최대 max_turns*2개 메시지를 요약한다.
+    """
+    prior = messages[:-1]  # 현재 user 메시지 제외
+    if not prior:
+        return ""
+    recent = prior[-(max_turns * 2):]
+    lines = []
+    for msg in recent:
+        role = "사용자" if msg["role"] == "user" else "어시스턴트"
+        content = msg.get("display", msg["content"])
+        content = content[:150].replace("\n", " ").strip()
+        lines.append(f"  {role}: {content}")
     return "\n".join(lines)
 
 
@@ -510,11 +613,13 @@ def build_system_prompt(
     intent: str = "query",
     compact: bool = False,
     last_result_info: dict | None = None,
+    recent_messages: list[dict] | None = None,
 ) -> str:
-    """페르소나 + 파일 현황 + 실제 파일명 치환된 예시 + 코드 규칙 조합.
+    """페르소나 + 파일 현황 + 대화 맥락 + 예시 + 코드 규칙 조합.
 
     compact=True: Ollama 소형 모델용 — 예시를 짧은 버전으로 교체
     last_result_info: 직전 실행 결과 DataFrame 메타 (rows, columns, col_names)
+    recent_messages: session_state.messages 전체 — 최근 3턴을 압축해 시스템 프롬프트에 주입
     """
     persona_key = _INTENT_TO_PERSONA.get(intent, "analyst")
     persona = _PERSONAS[persona_key]
@@ -531,6 +636,11 @@ def build_system_prompt(
             f" | 컬럼: {cols}"
         )
         parts.append(lr_section)
+
+    if recent_messages:
+        conv = _format_recent_conversation(recent_messages)
+        if conv:
+            parts.append(f"## 이전 대화 맥락\n{conv}")
 
     example_mode = "compact" if compact else "full"
     raw_example = _EXAMPLES.get(intent, _EXAMPLES["query"])[example_mode]
@@ -596,7 +706,7 @@ def collect_files_info(list_files_fn, read_file_fn) -> list[dict]:
             continue
         # object 타입인데 70% 이상이 숫자로 파싱 가능한 컬럼 (타입 불일치)
         mixed_type_cols = []
-        for col in df.select_dtypes(include="object").columns:
+        for col in df.select_dtypes(include=["object", "string"]).columns:
             sample = df[col].dropna().head(100)
             if len(sample) > 0:
                 ratio = pd.to_numeric(sample, errors="coerce").notna().mean()
@@ -608,6 +718,30 @@ def collect_files_info(list_files_fn, read_file_fn) -> list[dict]:
                 str(k): (str(v)[:30] if pd.notna(v) else None)
                 for k, v in row.items()
             })
+
+        # 수치형 컬럼 통계 (min / mean / max)
+        numeric_stats: dict[str, dict] = {}
+        for col in df.select_dtypes(include="number").columns:
+            s = df[col].dropna()
+            if len(s) > 0:
+                numeric_stats[str(col)] = {
+                    "min":  round(float(s.min()),  2),
+                    "mean": round(float(s.mean()), 2),
+                    "max":  round(float(s.max()),  2),
+                }
+
+        # 문자형 컬럼 고유값 현황 (mixed_type 제외)
+        string_stats: dict[str, dict] = {}
+        for col in df.select_dtypes(include=["object", "string"]).columns:
+            if str(col) in mixed_type_cols:
+                continue
+            vc = df[col].dropna().value_counts()
+            if len(vc) > 0:
+                string_stats[str(col)] = {
+                    "unique": int(df[col].nunique()),
+                    "top": [str(v) for v in vc.index[:3].tolist()],
+                }
+
         result.append({
             "name": fname,
             "rows": len(df),
@@ -617,6 +751,8 @@ def collect_files_info(list_files_fn, read_file_fn) -> list[dict]:
             "dtypes": df.dtypes.astype(str).to_dict(),
             "mixed_type_cols": mixed_type_cols,
             "head_sample": head_sample,
+            "numeric_stats": numeric_stats,
+            "string_stats": string_stats,
         })
     return result
 

@@ -16,14 +16,17 @@
 | 멀티 모델 지원 | Ollama (로컬), Google Gemini, OpenAI GPT 중 선택 |
 | 파일 관리 | xlsx / xls / csv 다중 업로드, 미리보기, 삭제 |
 | 대화형 분석 | 자연어로 질문하면 AI가 pandas 코드를 생성하고 서버에서 실행 |
+| 구조화된 결과 타입 | DataFrame · 숫자 · 텍스트 · 차트를 타입별로 렌더링 |
+| 차트 생성 | "막대 차트 그려줘" 같은 요청에 matplotlib 차트를 인라인 표시 |
+| 코드 오류 자동 수정 | 실행 실패 시 에러를 LLM에게 돌려보내 수정 코드 자동 재실행 (최대 2회) |
 | 후속 작업 연결 | 직전 실행 결과(`last_result`)를 다음 요청에 자동으로 이어받아 처리 |
 | 후속 질문 추천 | 답변 후 LLM이 이어서 할 만한 작업 3개를 버튼으로 제안 |
-| 의도 배지 | 요청 의도(필터링/병합/집계 등)를 색상 배지로 표시 |
+| 의도 배지 | 요청 의도(필터링/병합/집계/차트 등)를 색상 배지로 표시 |
 | 데이터 품질 요약 | 결측치·Unnamed·중복 컬럼·타입 불일치를 사이드바에서 즉시 확인 |
 | 멀티 시트 경고 | xlsx에 시트가 여러 개일 경우 첫 시트만 읽힘을 경고 |
 | 데이터 입력 범위 | 실제 값이 입력된 행·열 범위와 채워진 셀 밀도를 자동 탐지 |
 | 결과 다운로드 | `save()`로 생성된 xlsx/csv를 사이드바에서 즉시 다운로드 |
-| 대화보내기 | 전체 채팅을 `.md` 파일로 저장 |
+| 대화 내보내기 | 전체 채팅을 `.md` 파일로 저장 |
 | 프롬프트 디버그 | 사이드바에서 보강된 프롬프트·시스템 프롬프트 실시간 확인 |
 
 ---
@@ -157,6 +160,30 @@ merge  →  merger   (키 매칭·중복 처리 특화)
 
 <img width="755" height="505" alt="image" src="https://github.com/user-attachments/assets/818cd42b-7ffa-4062-8bf6-043721c28893" />
 
+**파일 컨텍스트 자동 주입 (AI 답변 품질 향상)**
+
+파일을 업로드하면 LLM이 받는 시스템 프롬프트에 아래 정보가 자동으로 포함됩니다.
+
+```
+파일: sales.xlsx | 500행 × 5열
+컬럼: 날짜(날짜), 지역(문자열), 매출(실수), 수량(정수), 담당자(문자열)
+샘플: {'날짜': '2024-01-15', '지역': '서울', '매출': 1250000.0, '수량': 42, '담당자': '김철수'}
+수치 통계: 매출 min=50,000 / mean=980,000 / max=5,200,000 | 수량 min=1 / mean=28 / max=150
+문자열 분포: 지역 unique=6, top=['서울','부산','대구'] | 담당자 unique=12, top=['김철수','이영희','박민준']
+```
+
+- **dtype 의미 매핑**: `int64`→정수, `float64`→실수, `object`→문자열, `datetime64[ns]`→날짜 등 사람이 읽기 쉬운 타입명으로 변환
+- **수치 통계 자동 주입**: 숫자 컬럼마다 min/mean/max를 프롬프트에 포함해 LLM이 범위를 인지하고 정확한 코드를 생성
+- **문자열 분포 자동 주입**: 범주형 컬럼의 고유 값 수와 상위 3개 값을 포함해 필터 조건을 정확히 지정
+- **이전 대화 맥락 주입**: 최근 3턴의 대화를 요약해 시스템 프롬프트에 포함 — 이전 질문·답변을 LLM이 기억한 상태로 답변
+
+```
+## 이전 대화 맥락
+  사용자: 매출 100만 이상인 것만 뽑아줘
+  어시스턴트: 매출 컬럼 기준으로 필터링했습니다. result에 저장했습니다.
+  사용자: 그중에서 서울만 보여줘
+```
+
 ### 3. 후속 작업 연결 (`last_result`)
 
 하나의 대화 세션 안에서 이전 실행 결과를 다음 요청의 입력으로 이어받습니다.
@@ -173,27 +200,44 @@ st.session_state
 ├── result_history    # 실행 이력 전체
 ├── last_intent       # 직전 감지된 의도
 ├── suggestions       # 메시지별 후속 질문 추천
-└── pending_prompt    # 추천 버튼 클릭 시 다음 입력
+├── pending_prompt    # 추천 버튼 클릭 시 다음 입력
+└── correction_needed # 자동 수정 대기 중인 코드 (msg_idx → {code, error, attempt})
 ```
 
-"새 대화" 버튼을 누르면 `last_result`·`exec_results`·`suggestions`가 함께 초기화됩니다.
+"새 대화" 버튼을 누르면 `last_result`·`exec_results`·`suggestions`·`correction_needed`가 함께 초기화됩니다.
 
 ### 4. 코드 실행 샌드박스 (`core/code_executor.py`)
 
 LLM이 생성한 pandas 코드를 서버에서 안전하게 실행합니다.
 
 - **AST 검증**: `os`, `sys` 등 위험 모듈 및 모든 import 문 차단
-- **pandas/numpy import 자동 제거**: LLM이 실수로 넣은 `import pandas`는 실행 전 strip (`pd`, `np`는 이미 주입됨)
+- **pandas/numpy/matplotlib import 자동 제거**: LLM이 실수로 넣은 `import pandas`는 실행 전 strip (`pd`, `np`, `plt`는 이미 주입됨)
 - **30초 타임아웃**: 무한 루프 방지
-- **격리된 네임스페이스**: `files`, `last_result`, `pd`, `np`, `save()`, `print()` 만 허용
-- 실행 결과는 DataFrame으로 화면에 표시, `save("이름.xlsx")`로 `results/`에 저장
+- **격리된 네임스페이스**: `files`, `last_result`, `pd`, `np`, `plt`, `matplotlib`, `save()`, `print()` 만 허용
+- **구조화된 결과 타입**: `result` 변수에 타입 힌트 dict를 반환하면 UI가 타입별로 렌더링
 
 ```python
 # LLM 코드에서 사용 가능한 환경 (import 불필요)
 df = files["파일명.xlsx"]
+
+# DataFrame 반환
 result = df[df["매출"] >= 100]
+
+# 숫자 반환 — st.metric()으로 표시
+result = {"type": "number", "value": df["매출"].sum()}
+
+# 차트 반환 — PNG 이미지로 인라인 표시
+fig, ax = plt.subplots()
+df.groupby("지역")["매출"].sum().plot(kind="bar", ax=ax)
+result = {"type": "plot", "value": fig}
+
+# 저장
 save("필터결과.xlsx")
 ```
+
+- **자동 오류 수정**: 실행 실패 시 에러 메시지와 원본 코드를 LLM에게 돌려보내 수정 코드를 받아 자동 재실행 (최대 2회)
+  - `correction_needed` 세션 상태로 UI와 오케스트레이션 레이어 간 신호 전달
+  - 수정 성공 시 결과에 "↩ 자동 수정 후 실행 완료" 표시
 
 ### 5. 데이터 입력 범위 탐지 (`core/excel_processor.py`)
 
@@ -282,6 +326,26 @@ AI: 지역 기준으로 그룹화해 매출 합계를 계산합니다.
     [코드 생성 → 실행 → 지역별 합계 표 + 다운로드 버튼]
 ```
 
+### 숫자 결과
+```
+사용자: 전체 매출 합계 얼마야?
+AI: [코드 실행 → st.metric으로 "결과: 4,850,000" 표시]
+```
+
+### 차트 생성
+```
+사용자: 지역별 매출 막대 차트 그려줘
+AI: [코드 실행 → matplotlib 막대 차트 인라인 표시]
+```
+
+### 자동 오류 수정
+```
+AI: [잘못된 컬럼명으로 코드 생성 → 실행 실패]
+    → "코드 오류 자동 수정 중... (1/2)"
+    → LLM이 에러를 보고 수정 코드 생성 → 재실행
+    → "↩ 자동 수정 후 실행 완료"
+```
+
 ---
 
 ## 기술 스택
@@ -289,7 +353,7 @@ AI: 지역 기준으로 그룹화해 매출 합계를 계산합니다.
 | 구분 | 사용 |
 |------|------|
 | UI | Streamlit |
-| 데이터 | pandas, numpy, openpyxl, xlrd |
+| 데이터 | pandas, numpy, openpyxl, xlrd, matplotlib |
 | LLM | ollama, google-generativeai, openai |
 | 실행 환경 | Python 3.12+ |
 
@@ -299,3 +363,5 @@ AI: 지역 기준으로 그룹화해 매출 합계를 계산합니다.
 
 - [SheetPilot](https://github.com/prof-lijar/sheetpilot) — 코드 실행 샌드박스, 파일 관리 구조 참고
 - [cowork-llm-lab](https://github.com/YYeoeun/cowork-llm-lab) — 엑셀 헤더 감지, 다중 파일 병합 로직 참고
+- [PandasAI](https://github.com/sinaptik-ai/pandas-ai) — 에러 자동 수정, 수치 통계 컨텍스트 주입, dtype 의미 매핑 아이디어 참고
+- [excelchat-streamlit](https://github.com/frank-flin/excelchat-streamlit) — 대화 히스토리 시스템 프롬프트 주입 구조 참고

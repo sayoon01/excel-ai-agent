@@ -6,17 +6,22 @@ import io
 import re
 import signal
 import traceback
+import uuid
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 from services.file_manager import RESULT_DIR, list_files, read_file
 
-# pd, np는 namespace에 이미 주입되므로 이 import 문만 조용히 제거
+# pd, np, plt, matplotlib은 namespace에 이미 주입 — import 문만 조용히 제거
 _PRE_INJECTED_IMPORT = re.compile(
-    r"^[ \t]*(?:import (?:pandas|numpy)(?:\s+as\s+\w+)?|from (?:pandas|numpy)\b[^\n]*)[ \t]*(?:\n|$)",
+    r"^[ \t]*(?:import (?:pandas|numpy|matplotlib)(?:\.\w+)*(?:\s+as\s+\w+)?|from (?:pandas|numpy|matplotlib)(?:\.\w+)*\b[^\n]*)[ \t]*(?:\n|$)",
     re.MULTILINE,
 )
 
@@ -50,6 +55,7 @@ class ExecutionResult:
     result_df: pd.DataFrame | None = None
     result_type: str = ""      # "dataframe" | "number" | "string" | "plot"
     result_value: object = None
+    is_corrected: bool = False
     saved_files: list[str] = field(default_factory=list)
 
 
@@ -162,9 +168,11 @@ def execute(
 
     namespace: dict = {
         "files": files,
-        "last_result": last_result,   # 직전 작업 결과 DataFrame
+        "last_result": last_result,
         "pd": pd,
         "np": np,
+        "plt": plt,
+        "matplotlib": matplotlib,
         "result": None,
         "__builtins__": _make_safe_builtins(),
     }
@@ -201,6 +209,11 @@ def execute(
         result_value = result_raw["value"]
         if result_type == "dataframe" and isinstance(result_value, pd.DataFrame):
             result_df = result_value
+        elif result_type == "plot" and hasattr(result_value, "savefig"):
+            chart_path = RESULT_DIR / f"chart_{uuid.uuid4().hex[:8]}.png"
+            result_value.savefig(chart_path, dpi=150, bbox_inches="tight")
+            plt.close(result_value)
+            result_value = str(chart_path)
     elif isinstance(result_raw, pd.DataFrame):
         result_type = "dataframe"
         result_df = result_raw
@@ -208,6 +221,12 @@ def execute(
         result_type = "number"
     elif isinstance(result_raw, str):
         result_type = "string"
+
+    # save() 없이 result만 있으면 results/에 자동 저장 (사이드바·다운로드 버튼 연동)
+    if result_df is not None and not saved_files:
+        auto_name = f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        result_df.to_excel(RESULT_DIR / auto_name, index=False)
+        saved_files.append(auto_name)
 
     return ExecutionResult(
         success=True,

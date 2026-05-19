@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from services.file_manager import list_files
+from core.code_executor import execute
 from core.llm_client import GEMINI_MODELS, OPENAI_MODELS, get_client
 from core.prompt_builder import (
     _INTENT_LABEL,
@@ -15,7 +16,7 @@ from core.prompt_builder import (
     detect_intent,
 )
 from ui.components import intent_badge_html
-from ui.chat_view import render_chat_history, render_last_result_banner
+from ui.chat_view import extract_code_blocks, render_chat_history, render_last_result_banner
 from ui.quality_report import load_files_info
 from ui.sidebar import render_sidebar
 
@@ -42,12 +43,19 @@ _DEFAULTS = {
     "last_intent": None,
     "pending_prompt": None,
     "suggestions": {},
+    "correction_needed": {},
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
 # ── LLM 유틸 ──────────────────────────────────────────────────────────────────
+
+_CORRECTION_SYSTEM = (
+    "Python/pandas 코드 디버거입니다. 오류를 수정한 코드 블록만 반환하세요. 설명 불필요.\n"
+    "환경: files(dict), pd, np, plt 주입됨. import 문 사용 불가. "
+    "최종 결과는 반드시 result 변수에 저장."
+)
 
 _SUGGESTION_SYSTEM = (
     "너는 데이터 분석 어시스턴트야. "
@@ -58,8 +66,7 @@ _SUGGESTION_SYSTEM = (
     "- '~해줘' 형태의 짧은 명령형으로 작성 (예: '결측치 제거해줘', 'Unnamed 열 삭제해줘')\n"
     "- 물음표·질문형('~까요?', '~될까요?', '~어떤') 절대 금지 — 명령형만\n"
     "- 파일은 이미 업로드되어 있으므로 파일 경로·로딩 방법을 묻는 제안 금지\n"
-    "- 시각화·차트는 지원하지 않으므로 언급 금지\n"
-    "- 실제 데이터 작업(필터, 집계, 변환, 저장, 분석)에 관한 작업만"
+    "- 실제 데이터 작업(필터, 집계, 변환, 저장, 분석, 차트)에 관한 작업만"
 )
 
 
@@ -79,6 +86,53 @@ def _generate_suggestions(client, user_msg: str, assistant_msg: str) -> list[str
         return [ln for ln in lines if 3 < len(ln) <= 20][:3]
     except Exception:
         return []
+
+
+def _handle_correction(msg_idx: int, code: str, error: str, attempt: int) -> None:
+    """에러난 코드를 LLM에게 보내 수정 코드를 받아 재실행."""
+    client, err = _get_llm_client()
+    if err:
+        del st.session_state.correction_needed[msg_idx]
+        return
+
+    user_question = ""
+    if msg_idx > 0:
+        prev = st.session_state.messages[msg_idx - 1]
+        if prev["role"] == "user":
+            user_question = prev.get("display", prev["content"])
+
+    correction_msg = (
+        f"원래 질문: {user_question}\n\n"
+        f"실행한 코드:\n```python\n{code}\n```\n\n"
+        f"오류 메시지:\n{error}\n\n수정된 코드를 제공해주세요."
+    )
+    try:
+        raw = "".join(client.chat_stream(
+            [{"role": "user", "content": correction_msg}],
+            _CORRECTION_SYSTEM,
+        ))
+        codes = extract_code_blocks(raw)
+        if not codes:
+            del st.session_state.correction_needed[msg_idx]
+            return
+
+        result = execute(codes[0], last_result=st.session_state.last_result)
+        result.is_corrected = True
+        st.session_state.exec_results[msg_idx] = result
+
+        if result.success:
+            if result.result_df is not None:
+                st.session_state.last_result = result.result_df
+                st.session_state.result_history.append(result.result_df)
+            del st.session_state.correction_needed[msg_idx]
+        elif attempt < 2:
+            st.session_state.correction_needed[msg_idx] = {
+                "code": codes[0], "error": result.error, "attempt": attempt + 1,
+            }
+        else:
+            del st.session_state.correction_needed[msg_idx]
+    except Exception:
+        del st.session_state.correction_needed[msg_idx]
 
 
 def _get_llm_client():
@@ -108,6 +162,13 @@ def _get_llm_client():
 # ── Render ─────────────────────────────────────────────────────────────────────
 
 render_sidebar()
+
+# ── 자동 수정 처리 ─────────────────────────────────────────────────────────────
+if st.session_state.correction_needed:
+    for _midx, _info in list(st.session_state.correction_needed.items()):
+        with st.spinner(f"코드 오류 자동 수정 중... ({_info['attempt']}/2)"):
+            _handle_correction(_midx, _info["code"], _info["error"], _info["attempt"])
+    st.rerun()
 
 st.header("AI와 대화하기")
 
@@ -168,6 +229,7 @@ if prompt:
         system = build_system_prompt(
             files_info, intent, compact=is_compact,
             last_result_info=last_result_info,
+            recent_messages=st.session_state.messages,
         )
 
         with st.chat_message("assistant"):
