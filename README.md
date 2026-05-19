@@ -120,42 +120,15 @@ merge  →  merger  (키 매칭·중복 처리 특화)
 
 **시스템 프롬프트 조합**
 
-```mermaid
-flowchart LR
-    A[페르소나\nanalyst / engineer / merger] --> Z
-    B[파일 현황\n행수·컬럼·결측치] --> Z
-    C[직전 작업 결과\nlast_result 메타\n있을 때만] --> Z
-    D[Few-shot 예시\nintent별 코드 패턴\nfull / compact] --> Z
-    E[코드 작성 규칙\n_CODE_RULES] --> Z
-    Z[시스템 프롬프트 조합\nbuild_system_prompt] --> G[LLM]
-```
+<img width="755" height="505" alt="image" src="https://github.com/user-attachments/assets/818cd42b-7ffa-4062-8bf6-043721c28893" />
+
 
 ### 3. 후속 작업 연결 (`last_result`)
 
 하나의 대화 세션 안에서 이전 실행 결과를 다음 요청의 입력으로 이어받습니다.
 
-```mermaid
-sequenceDiagram
-    participant U as 사용자
-    participant A as app.py
-    participant P as prompt_builder
-    participant E as code_executor
+<img width="769" height="508" alt="image" src="https://github.com/user-attachments/assets/4d3fb762-6d46-4ac7-86ea-6b414f5d373c" />
 
-    U->>A: "매출 100 이상만 뽑아줘"
-    A->>P: augment_user_prompt (last_result_info=None)
-    A->>P: build_system_prompt (last_result_info=None)
-    A->>E: execute(code, last_result=None)
-    E-->>A: result_df
-    A->>A: session_state.last_result = result_df
-
-    U->>A: "그중에서 서울만 보여줘"
-    A->>P: augment_user_prompt (last_result_info={rows, col_names...})
-    A->>P: build_system_prompt (last_result_info={rows, col_names...})
-    A->>E: execute(code, last_result=result_df)
-    Note over E: df = last_result<br/>result = df[df["지역"] == "서울"]
-    E-->>A: result_df (필터링된 결과)
-    A->>A: session_state.last_result 갱신
-```
 
 세션 상태 구조:
 
