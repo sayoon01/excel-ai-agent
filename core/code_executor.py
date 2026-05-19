@@ -48,6 +48,8 @@ class ExecutionResult:
     output: str = ""
     error: str = ""
     result_df: pd.DataFrame | None = None
+    result_type: str = ""      # "dataframe" | "number" | "string" | "plot"
+    result_value: object = None
     saved_files: list[str] = field(default_factory=list)
 
 
@@ -189,13 +191,29 @@ def execute(
             error=traceback.format_exc(),
         )
 
-    result_df = namespace.get("result")
-    if result_df is not None and not isinstance(result_df, pd.DataFrame):
-        result_df = None
+    result_raw = namespace.get("result")
+    result_type = ""
+    result_value: object = result_raw
+    result_df: pd.DataFrame | None = None
+
+    if isinstance(result_raw, dict) and "type" in result_raw and "value" in result_raw:
+        result_type = str(result_raw["type"])
+        result_value = result_raw["value"]
+        if result_type == "dataframe" and isinstance(result_value, pd.DataFrame):
+            result_df = result_value
+    elif isinstance(result_raw, pd.DataFrame):
+        result_type = "dataframe"
+        result_df = result_raw
+    elif isinstance(result_raw, (int, float)) and result_raw is not None:
+        result_type = "number"
+    elif isinstance(result_raw, str):
+        result_type = "string"
 
     return ExecutionResult(
         success=True,
         output=stdout_capture.getvalue(),
         result_df=result_df,
+        result_type=result_type,
+        result_value=result_value,
         saved_files=saved_files,
     )

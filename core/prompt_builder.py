@@ -159,13 +159,11 @@ for name, df in files.items():
 result = pd.DataFrame(rows)
 ```
 
-### 코드 형식
-```python
-# 한 줄 설명 주석
-result = ...
-save("output.xlsx")  # 저장이 필요할 때만
-```
-- 최종 결과는 반드시 `result = ...` 에 저장"""
+### 결과 반환 형식
+- DataFrame → `result = df` (기본, 항상 사용)
+- 숫자 하나 → `result = {"type": "number", "value": 1234}`
+- 텍스트 설명 → `result = {"type": "string", "value": "매출 총합: 3,200만원"}`
+- 최종 결과는 반드시 `result = ...`에 저장 (print()만 쓰면 결과가 UI에 표시되지 않음)"""
 
 # endregion
 
@@ -219,14 +217,24 @@ result = result.sort_values("숫자컬럼", ascending=False)
 ```python
 df = files["{FILE_A}"]
 result = df.groupby("기준컬럼")["숫자컬럼"].agg(["mean","count"]).reset_index()
+```
+
+사용자: "총 합계가 얼마야?" / "전체 건수가 몇 개야?" (단일 숫자 답변)
+어시스턴트: 숫자 하나는 number 타입으로 반환합니다.
+```python
+df = files["{FILE_A}"]
+total = int(df["숫자컬럼"].sum())
+print(f"총합: {total:,}")
+result = {"type": "number", "value": total}
 ```""",
         "compact": """\
 ## 집계 코드 패턴
 ```python
 df = files["{FILE_A}"]
-result = df.groupby("기준컬럼")["숫자컬럼"].sum().reset_index()   # 합계
-result = df.groupby("기준컬럼")["숫자컬럼"].mean().reset_index()  # 평균
+result = df.groupby("기준컬럼")["숫자컬럼"].sum().reset_index()        # 그룹 합계 → DataFrame
 result = df.groupby("기준컬럼").agg({"숫자컬럼": ["sum","mean","count"]})
+total = int(df["숫자컬럼"].sum())
+result = {"type": "number", "value": total}                            # 단일 숫자
 ```""",
     },
 
@@ -341,6 +349,35 @@ for col in df.select_dtypes(include="number").columns:
     rows.append({"컬럼": col, "평균": round(s.mean(), 1),
                  "중앙값": round(s.median(), 1), "이상값_의심": outlier_cnt})
 result = pd.DataFrame(rows)
+```
+
+사용자: "파일들 분석해줘" / "데이터 파악해줘" (파일이 여러 개일 때)
+어시스턴트: 파일별 구조를 먼저 정리하고 공통점·차이점을 짚어줍니다.
+
+**{FILE_A}** vs **{FILE_B}** 구조:
+- 공통 컬럼: [겹치는 컬럼명]
+- {FILE_A}만: [고유 컬럼] / {FILE_B}만: [고유 컬럼]
+- 결측치: {FILE_A}는 N개 컬럼, {FILE_B}는 M개 컬럼에 존재
+
+```python
+# 파일별 기본 현황 비교표
+rows = []
+for name, df in files.items():
+    missing = df.isnull().sum()
+    rows.append({
+        "파일명": name,
+        "행수": len(df),
+        "열수": len(df.columns),
+        "결측치_컬럼수": int((missing > 0).sum()),
+        "수치형_컬럼수": len(df.select_dtypes(include="number").columns),
+    })
+result = pd.DataFrame(rows)
+
+# 공통 컬럼 확인
+names = list(files.keys())
+if len(names) >= 2:
+    common = set(files[names[0]].columns) & set(files[names[1]].columns)
+    print(f"공통 컬럼 {len(common)}개: {', '.join(sorted(common))}")
 ```""",
         "compact": """\
 ## 분석 코드 패턴 (describe 대신 구조화된 테이블 사용)
@@ -386,17 +423,35 @@ save("output.xlsx")           # .xlsx 또는 .csv
         "full": """\
 ## 참고 예시 — 단순 질문 (코드 없이 바로 답변)
 
+규칙: 파일이 여러 개면 모든 파일을 빠짐없이 답변합니다. 특정 파일명이 언급되지 않으면 전체 파일 기준으로 답하세요. 하나만 골라 답하지 마세요.
+
 사용자: "컬럼이 뭐가 있어?"
-어시스턴트: (파일 정보에서 바로 답변)
-"{FILE_A}의 컬럼은 [컬럼 목록] 총 N개입니다."
+어시스턴트:
+**{FILE_A}** (N행): 날짜, 지역, 매출, 비용 — 총 4개
+**{FILE_B}** (M행): 날짜, 부서, 예산, 집행 — 총 4개
 
 사용자: "몇 행이야?"
-어시스턴트: "{FILE_A}는 총 N행입니다."
+어시스턴트: {FILE_A} N행, {FILE_B} M행입니다.
 
 사용자: "어떤 데이터야?"
-어시스턴트: "N행 × M열 구조이며, [주요 컬럼] 으로 구성되어 있습니다." """,
+어시스턴트: (샘플 행을 참고해 내용을 추정하고 파일별로 한 줄씩 요약)
+**{FILE_A}**: N행 × M열. 날짜·지역·매출 구성 — 판매 실적 데이터로 보입니다.
+**{FILE_B}**: P행 × Q열. 부서·예산·집행 구성 — 예산 집행 현황 데이터로 보입니다.
+
+사용자: "파일 1개만 있을 때 — 컬럼이 뭐가 있어?"
+어시스턴트: {FILE_A} 컬럼은 날짜, 지역, 매출, 비용 총 4개입니다.
+
+사용자: "결측치 몇 개야?" (단일 숫자로 충분한 경우)
+어시스턴트:
+```python
+df = files["{FILE_A}"]
+total_missing = int(df.isnull().sum().sum())
+result = {"type": "number", "value": total_missing}
+```""",
         "compact": """\
-## 단순 질문은 파일 정보에서 코드 없이 바로 답하세요.""",
+## 단순 질문 규칙
+- 파일이 여러 개면 모든 파일 기준으로 답변 (첫 번째 파일만 고르지 말 것)
+- 컬럼 목록·행 수는 파일 정보에서 코드 없이 바로 답변""",
     },
 }
 
@@ -436,6 +491,10 @@ def _summarize_files(files_info: list[dict]) -> str:
             f"  - {f['name']} : {f['rows']}행 × {f['columns']}열"
             f" | 컬럼: {', '.join(f['col_names'])}{null_note}"
         )
+        if f.get("head_sample") and f["head_sample"]:
+            first = f["head_sample"][0]
+            pairs = [f"{k}={repr(v)}" for k, v in list(first.items())[:5]]
+            lines.append(f"    샘플(1행): {', '.join(pairs)}")
     return "\n".join(lines)
 
 
@@ -494,7 +553,7 @@ def augment_user_prompt(
     all_cols: list[str] = []
     for f in files_info:
         all_cols.extend(f.get("col_names", []))
-    mentioned = [col for col in all_cols if col in raw_prompt]
+    mentioned = [col for col in all_cols if len(col) >= 2 and col in raw_prompt]
 
     null_warnings = []
     for f in files_info:
@@ -543,6 +602,12 @@ def collect_files_info(list_files_fn, read_file_fn) -> list[dict]:
                 ratio = pd.to_numeric(sample, errors="coerce").notna().mean()
                 if ratio >= 0.7:
                     mixed_type_cols.append(str(col))
+        head_sample = []
+        for _, row in df.head(2).iterrows():
+            head_sample.append({
+                str(k): (str(v)[:30] if pd.notna(v) else None)
+                for k, v in row.items()
+            })
         result.append({
             "name": fname,
             "rows": len(df),
@@ -551,6 +616,7 @@ def collect_files_info(list_files_fn, read_file_fn) -> list[dict]:
             "null_counts": df.isnull().sum().to_dict(),
             "dtypes": df.dtypes.astype(str).to_dict(),
             "mixed_type_cols": mixed_type_cols,
+            "head_sample": head_sample,
         })
     return result
 

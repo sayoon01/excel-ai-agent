@@ -23,12 +23,21 @@ def render_code_controls(msg_idx: int, content: str) -> None:
     if exec_result is not None:
         if exec_result.success:
             with st.container(border=True):
-                if exec_result.output:
-                    st.code(exec_result.output, language="text")
-                if exec_result.result_df is not None:
+                rtype = exec_result.result_type
+                if rtype == "dataframe" and exec_result.result_df is not None:
                     df = exec_result.result_df
                     row_h = min(400, max(120, len(df) * 35 + 40))
                     st.dataframe(df, use_container_width=True, height=row_h)
+                elif rtype == "number" and exec_result.result_value is not None:
+                    v = exec_result.result_value
+                    fmt = f"{v:,.0f}" if isinstance(v, float) and v == int(v) else (
+                        f"{v:,.2f}" if isinstance(v, float) else f"{v:,}"
+                    )
+                    st.metric(label="결과", value=fmt)
+                elif rtype == "string" and exec_result.result_value is not None:
+                    st.markdown(str(exec_result.result_value))
+                if exec_result.output:
+                    st.code(exec_result.output, language="text")
                 for sfname in exec_result.saved_files:
                     fpath = RESULT_DIR / sfname
                     if fpath.exists():
