@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import io
+import re
 import signal
 import traceback
 from dataclasses import dataclass, field
@@ -11,7 +12,18 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from utils.file_manager import RESULT_DIR, list_files, read_file
+from services.file_manager import RESULT_DIR, list_files, read_file
+
+# pd, np는 namespace에 이미 주입되므로 이 import 문만 조용히 제거
+_PRE_INJECTED_IMPORT = re.compile(
+    r"^[ \t]*(?:import (?:pandas|numpy)(?:\s+as\s+\w+)?|from (?:pandas|numpy)\b[^\n]*)[ \t]*(?:\n|$)",
+    re.MULTILINE,
+)
+
+
+def _strip_preinjected_imports(code: str) -> str:
+    return _PRE_INJECTED_IMPORT.sub("", code)
+
 
 BLOCKED_MODULES = frozenset({
     "os", "subprocess", "sys", "shutil", "importlib",
@@ -48,17 +60,20 @@ def _validate_code(code: str) -> list[str]:
     violations: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            names = (
-                [alias.name for alias in node.names]
-                if isinstance(node, ast.Import)
-                else ([node.module] if node.module else [])
-            )
+            # pd/np는 namespace에 이미 주입됨. __import__는 샌드박스에서 차단됨.
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            else:
+                mod = node.module or ""
+                names = [mod] if mod else [alias.name for alias in node.names]
             for name in names:
-                if name in BLOCKED_MODULES:
+                root = (name or "").split(".")[0]
+                if root in BLOCKED_MODULES:
                     violations.append(f"허용되지 않는 import: {name}")
-                elif name not in {"pandas", "numpy", "pd", "np"}:
+                else:
                     violations.append(
-                        f"import 불필요: {name} (pd, np는 이미 사용 가능)"
+                        f"import 문 사용 불가: {name} "
+                        "(pd, np는 이미 사용 가능 — import 없이 바로 쓰세요)"
                     )
         elif isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name) and node.func.id in BLOCKED_BUILTINS:
@@ -131,6 +146,7 @@ def execute(
     timeout_seconds: int = 30,
     last_result: pd.DataFrame | None = None,
 ) -> ExecutionResult:
+    code = _strip_preinjected_imports(code)
     violations = _validate_code(code)
     if violations:
         return ExecutionResult(

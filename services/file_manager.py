@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from utils.excel_processor import format_used_range, get_used_range
+from core.excel_processor import format_used_range, get_used_range
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
