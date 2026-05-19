@@ -1,6 +1,7 @@
 # Excel AI Platform
 
-<img width="1091" height="1071" alt="image" src="https://github.com/user-attachments/assets/1d9501a0-562c-4cc3-81ec-81d19a6af8fc" />
+<img width="1110" height="1270" alt="image" src="https://github.com/user-attachments/assets/8441c8e5-955c-49dc-8e26-388e4a2cab05" />
+
 
 엑셀·CSV 파일을 업로드하고 AI와 대화하면서 데이터를 분석·변환·병합하는 Streamlit 기반 대화형 앱입니다.
 
