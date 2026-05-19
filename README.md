@@ -11,6 +11,10 @@
 | 멀티 모델 지원 | Ollama (로컬), Google Gemini, OpenAI GPT 중 선택 |
 | 파일 관리 | xlsx / xls / csv 다중 업로드, 미리보기, 삭제 |
 | 대화형 분석 | 자연어로 질문하면 AI가 pandas 코드를 생성하고 서버에서 실행 |
+| 후속 작업 연결 | 직전 실행 결과(`last_result`)를 다음 요청에 자동으로 이어받아 처리 |
+| 의도 배지 | 요청 의도(필터링/병합/집계 등)를 색상 배지로 표시 |
+| 멀티 시트 경고 | xlsx 파일에 시트가 여러 개일 경우 사이드바에 경고 표시 |
+| 데이터 입력 범위 | 실제 값이 입력된 행·열 범위와 채워진 셀 밀도를 자동 탐지 |
 | 결과 다운로드 | 생성된 파일을 사이드바에서 즉시 다운로드 |
 | 대화 내보내기 | 전체 채팅을 `.md` 파일로 저장 |
 | 프롬프트 디버그 | 사이드바 토글로 보강된 프롬프트 실시간 확인 |
@@ -56,9 +60,9 @@ excel-platform/
 └── utils/
     ├── llm_client.py       # Ollama / Gemini / OpenAI 클라이언트
     ├── prompt_builder.py   # 동적 시스템 프롬프트 빌더 ★
-    ├── file_manager.py     # 파일 업로드·목록·삭제·미리보기
+    ├── file_manager.py     # 파일 업로드·목록·삭제·미리보기·범위 탐지
     ├── code_executor.py    # 안전한 코드 실행 샌드박스
-    ├── excel_processor.py  # 헤더 감지, 컬럼 분류, 다중 파일 병합
+    ├── excel_processor.py  # 헤더 감지, 컬럼 분류, 다중 파일 병합, 범위 탐지
     └── export.py           # 대화 내보내기
 ```
 
@@ -71,8 +75,25 @@ excel-platform/
 사용자가 짧게 입력해도 앱이 자동으로 맥락을 파악해서 LLM에 풍부한 프롬프트를 전달합니다.
 코드 생성은 수단이고, 자연스러운 대화가 목적입니다.
 
-```
-사용자 입력 → 의도 감지 → 프롬프트 보강 → 페르소나 선택 → LLM 실행 → 응답
+```mermaid
+flowchart TD
+    A[사용자 입력] --> B[의도 감지\ndetect_intent]
+    B --> C{의도 분류}
+    C -->|filter / aggregate\ntransform / export| D[engineer 페르소나]
+    C -->|merge| E[merger 페르소나]
+    C -->|analyze / query| F[analyst 페르소나]
+    D & E & F --> G[프롬프트 보강\naugment_user_prompt]
+    G --> H[시스템 프롬프트 조합\nbuild_system_prompt]
+    H --> I[LLM 스트리밍]
+    I --> J[응답 표시]
+    J --> K{코드 블록\n포함?}
+    K -->|Yes| L[▶ 코드 실행 버튼]
+    K -->|No| M[대화 종료]
+    L --> N[샌드박스 실행\nexecute]
+    N --> O{성공?}
+    O -->|Yes| P[result_df 저장\nlast_result 갱신]
+    O -->|No| Q[오류 표시]
+    P --> R[DataFrame 표시\n+ 다운로드 버튼]
 ```
 
 ### 2. 동적 프롬프트 파이프라인 (`prompt_builder.py`)
@@ -109,31 +130,79 @@ merge  →  merger  (키 매칭·중복 처리 특화)
 
 ---
 [자동 컨텍스트]
-감지된 의도: 파일/시트 병합
-파일 'a.xlsx': 500행 | 컬럼=[날짜, 매출, 지역]
-파일 'b.xlsx': 300행 | 컬럼=[날짜, 매출, 담당자]
+요청에서 언급된 컬럼: 날짜
 주의 — 'b.xlsx' 결측치: 담당자(12개)
+직전 작업 결과(last_result): 500행 × 3열, 컬럼: 날짜, 매출, 지역
 ```
 
 **시스템 프롬프트 조합**
 
-```
-페르소나 (merger)
-+ 파일 현황 (행수·컬럼·결측치)
-+ Few-shot 예시 (merge 전용 코드 패턴)
-+ 코드 작성 규칙
+```mermaid
+flowchart LR
+    A[페르소나\nanalyst / engineer / merger] --> Z
+    B[파일 현황\n행수·컬럼·결측치] --> Z
+    C[직전 작업 결과\nlast_result 메타\n있을 때만] --> Z
+    D[Few-shot 예시\nintent별 코드 패턴\nfull / compact] --> Z
+    E[코드 작성 규칙\n_CODE_RULES] --> Z
+    Z[시스템 프롬프트 조합\nbuild_system_prompt] --> G[LLM]
 ```
 
-### 3. 코드 실행 샌드박스 (`code_executor.py`)
+### 3. 후속 작업 연결 (`last_result`)
+
+하나의 대화 세션 안에서 이전 실행 결과를 다음 요청의 입력으로 이어받습니다.
+
+```mermaid
+sequenceDiagram
+    participant U as 사용자
+    participant A as app.py
+    participant P as prompt_builder
+    participant E as code_executor
+
+    U->>A: "매출 100 이상만 뽑아줘"
+    A->>P: augment_user_prompt (last_result_info=None)
+    A->>P: build_system_prompt (last_result_info=None)
+    A->>E: execute(code, last_result=None)
+    E-->>A: result_df
+    A->>A: session_state.last_result = result_df
+
+    U->>A: "그중에서 서울만 보여줘"
+    A->>P: augment_user_prompt (last_result_info={rows, col_names...})
+    A->>P: build_system_prompt (last_result_info={rows, col_names...})
+    A->>E: execute(code, last_result=result_df)
+    Note over E: df = last_result<br/>result = df[df["지역"] == "서울"]
+    E-->>A: result_df (필터링된 결과)
+    A->>A: session_state.last_result 갱신
+```
+
+세션 상태 구조:
+
+```python
+st.session_state
+├── last_result      # 가장 최근 실행 결과 DataFrame
+├── result_history   # 실행 이력 전체 (리스트)
+└── last_intent      # 직전 감지된 의도
+```
+
+"새 대화" 버튼을 누르면 `last_result`도 함께 초기화됩니다.
+
+### 4. 코드 실행 샌드박스 (`code_executor.py`)
 
 LLM이 생성한 pandas 코드를 서버에서 안전하게 실행합니다.
 
 - **AST 검증**: import, open, 위험한 내장 함수 차단
 - **30초 타임아웃**: 무한 루프 방지
-- **격리된 네임스페이스**: `files`, `pd`, `np`, `save()`, `print()` 만 허용
+- **격리된 네임스페이스**: `files`, `last_result`, `pd`, `np`, `save()`, `print()` 만 허용
 - 실행 결과는 DataFrame으로 화면에 표시, `save()`로 다운로드 파일 생성
 
-### 4. 멀티 모델 추상화 (`llm_client.py`)
+### 5. 데이터 입력 범위 탐지 (`excel_processor.py`)
+
+업로드된 파일에서 실제 값이 입력된 셀 범위를 자동으로 탐지합니다.
+
+- xlsx: openpyxl 셀 이터레이션으로 min/max 행·열 계산
+- csv: pandas `notna()` 마스크로 범위 추정
+- 결과: `범위: 1행~50행 / 1열~5열 | 채워진 셀: 240/250 (96.0%)` 형태로 사이드바에 표시
+
+### 6. 멀티 모델 추상화 (`llm_client.py`)
 
 모든 프로바이더가 동일한 스트리밍 인터페이스를 사용합니다.
 
@@ -147,12 +216,15 @@ for token in client.chat_stream(messages, system_prompt):
     ...
 ```
 
+Ollama 소형 모델(7b/8b 이하)은 compact 모드로 자동 전환되어 프롬프트 길이를 줄입니다.
+
 ---
 
 ## 지원 모델
 
 **Ollama (로컬, 무료)**
 - 설치된 모델 자동 감지 (qwen2.5, deepseek-coder, gemma3 등)
+- 7b/8b/3b/1b/mini 포함 모델명은 compact 프롬프트 자동 적용
 
 **Google Gemini**
 - gemini-2.0-flash, gemini-1.5-flash, gemini-1.5-pro
@@ -167,21 +239,27 @@ for token in client.chat_stream(messages, system_prompt):
 ### 단순 질문
 ```
 사용자: 컬럼이 뭐가 있어?
-AI: sales.xlsx의 컬럼은 날짜, 매출, 지역, 담당자, 상품명 총 5개입니다.
+AI: a.xlsx의 컬럼은 날짜, 매출, 지역, 담당자, 상품명 총 5개입니다.
 ```
 
 ### 필터링
 ```
 사용자: 매출 100 이상인 것만 뽑아줘
 AI: 매출 컬럼 기준으로 100 이상인 행만 추출합니다.
-    [코드 생성 → 실행 버튼 → 결과 DataFrame 표시]
+    [코드 생성 → ▶ 코드 실행 버튼 → 결과 DataFrame 표시]
+```
+
+### 후속 필터링
+```
+사용자: 그중에서 서울만 보여줘
+AI: 직전 결과에서 지역이 서울인 행만 추출합니다.
+    [last_result 기반 코드 생성 → 실행]
 ```
 
 ### 파일 병합
 ```
 사용자: 이거 합쳐줘
-AI: 두 파일의 공통 컬럼을 확인했습니다. '날짜'를 기준으로 병합할까요,
-    아니면 다른 키 컬럼이 있나요?
+AI: 두 파일의 공통 컬럼을 확인했습니다. '날짜'를 기준으로 병합할까요?
 ```
 
 ### 집계
