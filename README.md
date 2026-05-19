@@ -20,7 +20,7 @@
 | 결과 다운로드 | 생성된 파일을 사이드바에서 즉시 다운로드 |
 | 대화 내보내기 | 전체 채팅을 `.md` 파일로 저장 |
 | 프롬프트 디버그 | 사이드바 토글로 보강된 프롬프트 실시간 확인 |
-<img width="759" height="473" alt="image" src="https://github.com/user-attachments/assets/d42e1fb1-a688-4eb6-b163-428f587a5d28" />
+
 ---
 
 ## 빠른 시작
