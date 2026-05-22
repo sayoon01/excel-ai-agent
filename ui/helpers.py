@@ -23,8 +23,9 @@ _DEFAULTS: dict = {
     "pending_prompt": None,
     "suggestions": {},
     "current_chat_id": "",
-    "selected_sheets": {},     # fname → sheet_name
-    "selected_files": [],      # 채팅에서 활성화된 파일 목록
+    "selected_sheets": {},        # fname → sheet_name
+    "selected_files": [],         # 채팅에서 활성화된 파일 목록
+    "selected_persona_key": None, # None = intent 자동 결정
 }
 
 

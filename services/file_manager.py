@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 from core.excel_processor import format_used_range, get_used_range, read_excel_smart
+from core.quality_rules import profile_quality
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -174,6 +175,7 @@ def collect_files_info(file_names: list[str] | None = None) -> list[dict]:
             "head_sample": head_sample,
             "numeric_stats": numeric_stats,
             "string_stats": string_stats,
+            "quality_profile": profile_quality(df),
         })
     return result
 

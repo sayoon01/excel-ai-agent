@@ -2,7 +2,6 @@
 
 <img width="1110" height="1270" alt="image" src="https://github.com/user-attachments/assets/8441c8e5-955c-49dc-8e26-388e4a2cab05" />
 
-
 엑셀·CSV 파일을 업로드하고 AI와 대화하면서 데이터를 분석·변환·병합하는 Streamlit 기반 대화형 앱입니다.
 
 **저장소:** [github.com/sayoon01/excel-ai-agent](https://github.com/sayoon01/excel-ai-agent)
@@ -14,31 +13,31 @@
 | 기능 | 설명 |
 |------|------|
 | 멀티 모델 지원 | Ollama (로컬), Google Gemini, OpenAI GPT 중 선택 |
-| 파일 관리 | xlsx / xls / csv 다중 업로드, 미리보기, 삭제 |
+| 파일 관리 | xlsx / xls / csv 다중 업로드, 중복 처리, 멀티 시트 선택, 전체 보기 |
 | 대화형 분석 | 자연어로 질문하면 AI가 pandas 코드를 생성하고 서버에서 실행 |
+| 파일 선택 pills | 채팅 화면에서 분석할 파일을 pill 버튼으로 다중 선택 |
+| 페르소나 관리 | 분석가·엔지니어·병합 전문가 등 AI 역할을 화면에서 생성·편집·복제 |
+| 채팅 페르소나 선택 | 채팅 중 페르소나를 pill로 즉시 전환 (자동 / 수동) |
+| 데이터 품질 프로파일링 | 결측률·중복·집계행·이상값·타입 혼재를 규칙 기반으로 자동 진단 |
+| AI 품질 코멘트 | 진단 결과를 LLM이 한국어로 요약 (1회 생성 후 영구 캐시) |
 | 구조화된 결과 타입 | DataFrame · 숫자 · 텍스트 · 차트를 타입별로 렌더링 |
-| 차트 생성 | "막대 차트 그려줘" 같은 요청에 matplotlib 차트를 인라인 표시 |
-| 코드 오류 자동 수정 | 실행 실패 시 에러를 LLM에게 돌려보내 수정 코드 자동 재실행 (최대 2회) |
+| 코드 오류 자동 수정 | 실행 실패 시 에러를 LLM에게 돌려보내 수정 코드 자동 재실행 |
 | 후속 작업 연결 | 직전 실행 결과(`last_result`)를 다음 요청에 자동으로 이어받아 처리 |
 | 후속 질문 추천 | 답변 후 LLM이 이어서 할 만한 작업 3개를 버튼으로 제안 |
 | 의도 배지 | 요청 의도(필터링/병합/집계/차트 등)를 색상 배지로 표시 |
-| 데이터 품질 요약 | 결측치·Unnamed·중복 컬럼·타입 불일치를 사이드바에서 즉시 확인 |
-| 멀티 시트 경고 | xlsx에 시트가 여러 개일 경우 첫 시트만 읽힘을 경고 |
-| 데이터 입력 범위 | 실제 값이 입력된 행·열 범위와 채워진 셀 밀도를 자동 탐지 |
-| 결과 다운로드 | `save()`로 생성된 xlsx/csv를 사이드바에서 즉시 다운로드 |
+| 결과 자동 저장 | `result` DataFrame이 있으면 `results/`에 xlsx로 자동 저장·다운로드 |
 | 대화 내보내기 | 전체 채팅을 `.md` 파일로 저장 |
-| 프롬프트 디버그 | 사이드바에서 보강된 프롬프트·시스템 프롬프트 실시간 확인 |
 
 ---
 
 ## 빠른 시작
 
 ```bash
-# 1. 저장소 클론
+# 저장소 클론
 git clone https://github.com/sayoon01/excel-ai-agent.git
 cd excel-ai-agent
 
-# 2. 실행 (최초 1회 자동으로 가상환경 생성 및 패키지 설치)
+# 실행 (최초 1회 가상환경 생성 및 패키지 설치)
 ./run.sh
 ```
 
@@ -53,92 +52,182 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-### Ollama 로컬 모델 사용 시
+### Ollama 로컬 모델
 
 ```bash
-# Ollama 설치 후 원하는 모델 pull
 ollama pull qwen2.5
 ollama pull gemma3:27b
 ```
 
-앱 실행 후 사이드바에서 설치된 모델이 자동으로 표시됩니다. Host 기본값은 `http://localhost:11434`입니다.
-
-### Gemini / OpenAI
-
-사이드바에서 API 키를 입력한 뒤 모델을 선택합니다. 키는 세션에만 유지되며 저장소에 커밋되지 않습니다.
+앱 실행 후 설정 탭에서 설치된 모델이 자동으로 표시됩니다.
 
 ---
 
 ## 프로젝트 구조
 
 ```
-excel-ai-agent/
-├── app.py                  # Streamlit 진입점 · 채팅 핸들러
-├── run.sh                  # 실행 스크립트 (venv + streamlit)
-├── requirements.txt
-├── CODE_REVIEW.md          # 코드 리뷰 노트
-├── .streamlit/
-│   └── config.toml         # 다크 테마 설정
-├── core/                   # 비즈니스 로직 (Streamlit 미사용)
-│   ├── llm_client.py       # Ollama / Gemini / OpenAI 클라이언트
-│   ├── prompt_builder.py   # 의도 감지 · 동적 시스템 프롬프트 ★
-│   ├── code_executor.py    # 안전한 코드 실행 샌드박스
-│   └── excel_processor.py  # 헤더 감지 · 사용 범위 탐지
-├── services/               # I/O · 파일 시스템
-│   ├── file_manager.py     # 업로드 · 목록 · 삭제 · 미리보기
-│   └── export.py           # 대화보내기 (.md)
-├── ui/                     # Streamlit 렌더링 전담
-│   ├── sidebar.py          # 모델 설정 · 파일 · 결과 · 디버그
-│   ├── chat_view.py        # 채팅 · 코드 실행 · 후속 질문 버튼
-│   ├── quality_report.py   # 데이터 품질 요약 (사이드바)
-│   └── components.py       # 의도 배지 등 공통 UI
+excel-platform/
+├── app.py                      # st.navigation() 진입점
+├── data/
+│   └── personas.json           # 페르소나 데이터 (프리셋 + 커스텀)
+├── pages/
+│   ├── 0_채팅.py               # AI 채팅 + 파일·페르소나 선택
+│   ├── 1_파일관리.py            # 업로드, 미리보기, 품질 리포트
+│   ├── 2_설정.py               # LLM 모델 설정
+│   └── 3_페르소나.py            # 페르소나 관리 UI
+├── core/                       # 비즈니스 로직 (Streamlit 미사용)
+│   ├── llm_client.py           # Ollama / Gemini / OpenAI 클라이언트
+│   ├── code_executor.py        # 안전한 코드 실행 샌드박스
+│   ├── excel_processor.py      # 헤더 감지 · 사용 범위 탐지
+│   ├── intent.py               # 의도 분류 (7종)
+│   ├── persona_manager.py      # 페르소나 CRUD + intent 매핑
+│   ├── quality_rules.py        # 데이터 품질 프로파일링 규칙
+│   ├── chat_history.py         # 대화 이력 저장
+│   └── prompts/
+│       ├── builder.py          # 동적 system prompt 조합
+│       ├── code_rules.py       # 코드 생성 규칙
+│       └── examples.py         # intent별 few-shot 예시
+├── services/
+│   ├── file_manager.py         # 업로드 · 목록 · 삭제 · 미리보기
+│   ├── comment_cache.py        # LLM 품질 코멘트 영구 캐시
+│   └── export.py               # 대화 내보내기 (.md)
+├── ui/
+│   ├── helpers.py              # 세션 상태 초기화 · LLM 클라이언트 팩토리
+│   ├── sidebar.py              # 모델 설정 · 파일 업로드
+│   ├── chat_view.py            # 채팅 렌더링 · 코드 실행 · 후속 질문
+│   ├── quality_report.py       # 품질 리포트 UI
+│   ├── persona_panel.py        # 페르소나 관리 UI
+│   └── components.py           # 의도 배지 등 공통 UI
+├── docs/
+│   └── persona_system_design.md
 ├── tests/
-│   └── test_used_range.py
-├── uploads/                # 업로드 파일 (gitignore)
-└── results/                # AI 생성 결과 파일 (gitignore)
+├── uploads/                    # 업로드 파일 (gitignore)
+└── results/                    # 결과 파일 · LLM 코멘트 캐시 (gitignore)
 ```
 
-### 레이어 역할
+### 레이어 아키텍처
 
-| 레이어 | 역할 | Streamlit 의존 |
-|--------|------|----------------|
-| `app.py` | 세션 상태 · LLM 호출 오케스트레이션 | ✅ |
-| `ui/` | 화면 렌더링만 담당 | ✅ |
-| `core/` | 프롬프트 · 코드 실행 · 엑셀 처리 | ❌ |
-| `services/` | 파일 읽기/쓰기 ·보내기 | ❌ |
+```mermaid
+graph TD
+    subgraph Pages
+        P0["💬 0_채팅.py"]
+        P1["📂 1_파일관리.py"]
+        P2["⚙️ 2_설정.py"]
+        P3["🎭 3_페르소나.py"]
+    end
+
+    subgraph UI["ui/"]
+        HLP["helpers.py\n세션·클라이언트"]
+        CHV["chat_view.py\n채팅 렌더링"]
+        QR["quality_report.py\n품질 리포트"]
+        PP["persona_panel.py\n페르소나 관리"]
+        SB["sidebar.py"]
+    end
+
+    subgraph Core["core/"]
+        LC["llm_client.py\nOllama/Gemini/OpenAI"]
+        CE["code_executor.py\n샌드박스 실행"]
+        PM["persona_manager.py\nCRUD + intent 매핑"]
+        QU["quality_rules.py\n품질 프로파일링"]
+        BD["prompts/builder.py\nsystem prompt 조합"]
+        IT["intent.py\n의도 분류"]
+    end
+
+    subgraph Services["services/"]
+        FM["file_manager.py\n파일 I/O"]
+        CC["comment_cache.py\nLLM 코멘트 캐시"]
+        EX["export.py\n대화 내보내기"]
+    end
+
+    subgraph Data["data/"]
+        PJ["personas.json"]
+    end
+
+    P0 --> CHV
+    P0 --> HLP
+    P1 --> QR
+    P3 --> PP
+    CHV --> CE
+    CHV --> HLP
+    QR --> CC
+    PP --> PM
+    BD --> PM
+    BD --> IT
+    PM --> PJ
+    FM --> QU
+    QR --> FM
+```
 
 ---
 
 ## 설계 방향
 
-### 1. 대화 우선 설계
+### 1. 전체 요청 처리 흐름
 
-사용자가 짧게 입력해도 앱이 자동으로 맥락을 파악해서 LLM에 풍부한 프롬프트를 전달합니다. 코드 생성은 수단이고, 자연스러운 대화가 목적입니다.
+```mermaid
+flowchart TD
+    Input["💬 사용자 입력"]
+    Intent["intent 분류\ndetect_intent() → 7종"]
+    Persona{"페르소나 결정"}
+    AutoP["자동: resolve_persona_key(intent)"]
+    ManualP["수동: pills에서 선택"]
+    Build["system prompt 조합\nbuilder.py\n페르소나 + 파일 정보 + 맥락 + CODE_RULES"]
+    Augment["user prompt 보강\naugment_user_prompt()\n컬럼명 · 결측치 자동 주입"]
+    LLM["LLM 호출 streaming\nOllama / Gemini / OpenAI"]
+    Response["응답 표시\n텍스트 + 코드 expander"]
+    ExecBtn["▶ 코드 실행 버튼"]
+    Exec["code_executor.py\nAST 검증 → exec → 결과"]
+    Result["결과 렌더링\nDataFrame / 숫자 / 차트"]
+    AutoSave["results/ 자동 저장\n+ 다운로드 버튼"]
+    Retry["실패 시 LLM 자동 수정\n최대 2회 재시도"]
+    Followup["후속 질문 3개 생성\n_generate_suggestions()"]
 
-<img width="766" height="512" alt="image" src="https://github.com/user-attachments/assets/caf235b7-c1f9-44d4-b6ff-136c8c1d66fe" />
+    Input --> Intent
+    Intent --> Persona
+    Persona -->|자동| AutoP
+    Persona -->|수동| ManualP
+    AutoP --> Build
+    ManualP --> Build
+    Build --> Augment
+    Augment --> LLM
+    LLM --> Response
+    Response --> ExecBtn
+    ExecBtn --> Exec
+    Exec -->|성공| Result
+    Exec -->|실패| Retry
+    Retry --> Exec
+    Result --> AutoSave
+    Response --> Followup
+```
 
-### 2. 동적 프롬프트 파이프라인 (`core/prompt_builder.py`)
+### 2. 동적 프롬프트 파이프라인
 
 고정된 시스템 프롬프트 대신, 매 요청마다 상황에 맞는 프롬프트를 조합합니다.
 
 **의도 감지 → 7종 분류**
 
-| 의도 | 감지 키워드 예시 |
-|------|----------------|
-| filter | 필터, 뽑아, 추출, 이상, 이하 |
-| merge | 병합, 합쳐, 통합, join |
-| aggregate | 합계, 평균, 그룹, 집계 |
-| transform | 변환, 추가, 정렬, 계산 |
-| analyze | 분석, 통계, 요약, 패턴 |
-| export | 저장, 다운로드,보내기 |
-| query | 컬럼, 몇개, 뭐야, 보여줘 |
+| 의도 | 감지 키워드 예시 | 연결 페르소나 |
+|------|----------------|-------------|
+| filter | 필터, 뽑아, 추출, 이상, 이하 | 엔지니어 |
+| merge | 병합, 합쳐, 통합, join | 병합 전문가 |
+| aggregate | 합계, 평균, 그룹, 집계 | 엔지니어 |
+| transform | 변환, 추가, 정렬, 계산 | 엔지니어 |
+| analyze | 분석, 통계, 차트, 시각화 | 분석가 |
+| export | 저장, 다운로드, 내보내기 | 엔지니어 |
+| query | 컬럼, 몇개, 뭐야, 보여줘 | 분석가 |
 
-**페르소나 3개 분기**
+**페르소나 3종 + 커스텀**
 
-```
-analyze / query  →  analyst   (설명·인사이트 중심)
-filter / aggregate / transform / export  →  engineer  (코드·정확성 중심)
-merge  →  merger   (키 매칭·중복 처리 특화)
+```mermaid
+graph LR
+    analyze --> analyst["🧑‍💼 분석가\n설명·인사이트 중심"]
+    query --> analyst
+    filter --> engineer["👨‍💻 엔지니어\n코드·정확성 중심"]
+    aggregate --> engineer
+    transform --> engineer
+    export --> engineer
+    merge --> merger["🔗 병합 전문가\n키 매칭·중복 처리 특화"]
+    other["매핑 없음"] -->|fallback| analyst
 ```
 
 **사용자 프롬프트 자동 보강**
@@ -156,194 +245,82 @@ merge  →  merger   (키 매칭·중복 처리 특화)
 직전 작업 결과(last_result): 500행 × 3열, 컬럼: 날짜, 매출, 지역
 ```
 
-**시스템 프롬프트 조합**
+### 3. 페르소나 관리 시스템
 
-<img width="755" height="505" alt="image" src="https://github.com/user-attachments/assets/818cd42b-7ffa-4062-8bf6-043721c28893" />
+페르소나 데이터를 `data/personas.json`에 저장해 코드 수정 없이 화면에서 관리합니다.
 
-**파일 컨텍스트 자동 주입 (AI 답변 품질 향상)**
+```mermaid
+flowchart LR
+    J[("data/personas.json")]
+    PM["persona_manager.py\nCRUD"]
+    BD["builder.py\nprompt 조합"]
+    PP["persona_panel.py\n관리 UI"]
+    CH["0_채팅.py\npills 선택기"]
 
-파일을 업로드하면 LLM이 받는 시스템 프롬프트에 아래 정보가 자동으로 포함됩니다.
-
-```
-파일: sales.xlsx | 500행 × 5열
-컬럼: 날짜(날짜), 지역(문자열), 매출(실수), 수량(정수), 담당자(문자열)
-샘플: {'날짜': '2024-01-15', '지역': '서울', '매출': 1250000.0, '수량': 42, '담당자': '김철수'}
-수치 통계: 매출 min=50,000 / mean=980,000 / max=5,200,000 | 수량 min=1 / mean=28 / max=150
-문자열 분포: 지역 unique=6, top=['서울','부산','대구'] | 담당자 unique=12, top=['김철수','이영희','박민준']
-```
-
-- **dtype 의미 매핑**: `int64`→정수, `float64`→실수, `object`→문자열, `datetime64[ns]`→날짜 등 사람이 읽기 쉬운 타입명으로 변환
-- **수치 통계 자동 주입**: 숫자 컬럼마다 min/mean/max를 프롬프트에 포함해 LLM이 범위를 인지하고 정확한 코드를 생성
-- **문자열 분포 자동 주입**: 범주형 컬럼의 고유 값 수와 상위 3개 값을 포함해 필터 조건을 정확히 지정
-- **이전 대화 맥락 주입**: 최근 3턴의 대화를 요약해 시스템 프롬프트에 포함 — 이전 질문·답변을 LLM이 기억한 상태로 답변
-
-```
-## 이전 대화 맥락
-  사용자: 매출 100만 이상인 것만 뽑아줘
-  어시스턴트: 매출 컬럼 기준으로 필터링했습니다. result에 저장했습니다.
-  사용자: 그중에서 서울만 보여줘
+    J <-->|읽기/쓰기| PM
+    PM --> BD
+    PM --> PP
+    BD --> CH
 ```
 
-### 3. 후속 작업 연결 (`last_result`)
+- **프리셋**: 편집·복제만 가능, 삭제 불가
+- **커스텀**: 생성·편집·복제·삭제 전부 가능
+- System Prompt를 비워두면 About + Response style로 자동 생성
 
-하나의 대화 세션 안에서 이전 실행 결과를 다음 요청의 입력으로 이어받습니다.
+### 4. 코드 실행 샌드박스
 
-<img width="769" height="508" alt="image" src="https://github.com/user-attachments/assets/4d3fb762-6d46-4ac7-86ea-6b414f5d373c" />
+```mermaid
+flowchart TD
+    Code["LLM 생성 코드"]
+    Strip["import 자동 제거\n_strip_preinjected_imports()"]
+    AST["AST 검증\n위험 모듈·함수 차단"]
+    Fail1["❌ 검증 실패\n오류 반환"]
+    Exec["exec() 실행\n격리된 네임스페이스\n30초 타임아웃"]
+    Fail2["❌ 실행 실패"]
+    Retry["LLM 자동 수정\n최대 2회"]
+    Result["result 변수 분류\nDataFrame / 숫자 / 문자 / 차트"]
+    Save["results/ 자동 저장\n+ 다운로드 버튼"]
 
-세션 상태 구조:
+    Code --> Strip --> AST
+    AST -->|위반| Fail1
+    AST -->|통과| Exec
+    Exec -->|예외| Fail2
+    Fail2 --> Retry --> Exec
+    Exec -->|성공| Result --> Save
+```
+
+**실행 환경 (import 불필요)**
 
 ```python
-st.session_state
-├── messages          # 대화 이력 (user: display + intent 포함)
-├── exec_results      # 메시지별 코드 실행 결과
-├── last_result       # 가장 최근 실행 결과 DataFrame
-├── result_history    # 실행 이력 전체
-├── last_intent       # 직전 감지된 의도
-├── suggestions       # 메시지별 후속 질문 추천
-├── pending_prompt    # 추천 버튼 클릭 시 다음 입력
-└── correction_needed # 자동 수정 대기 중인 코드 (msg_idx → {code, error, attempt})
+df = files["파일명.xlsx"]       # 업로드된 파일 dict
+
+result = df[df["매출"] >= 100]  # DataFrame 반환 → st.dataframe()
+result = {"type": "number", "value": df["매출"].sum()}   # st.metric()
+result = {"type": "plot",   "value": fig}                # 인라인 차트
+save("결과.xlsx")               # results/ 저장 + 다운로드 버튼
 ```
 
-"새 대화" 버튼을 누르면 `last_result`·`exec_results`·`suggestions`·`correction_needed`가 함께 초기화됩니다.
+### 5. 데이터 품질 프로파일링
 
-### 4. 코드 실행 샌드박스 (`core/code_executor.py`)
+```mermaid
+flowchart LR
+    DF["DataFrame"]
+    PQ["profile_quality()\ncore/quality_rules.py"]
+    M["결측률 per 컬럼"]
+    D["중복 행 수"]
+    S["집계행 감지\n소계·합계·총계"]
+    O["IQR×3 이상값"]
+    MT["타입 혼재 컬럼"]
+    C["상수 컬럼"]
+    BFP["bullets_from_profile()\n임계값 필터링 + 한국어 변환"]
+    UI["주요 진단 결과\n· 비용명 결측률 40%\n· 집계행 2개 포함 가능성"]
+    AI["✨ AI 코멘트 생성\nLLM 3~5문장 요약"]
+    Cache["comment_cache.py\nJSON 영구 캐시\n파일명+profile 해시 키"]
 
-LLM이 생성한 pandas 코드를 서버에서 안전하게 실행합니다.
-
-- **AST 검증**: `os`, `sys` 등 위험 모듈 및 모든 import 문 차단
-- **pandas/numpy/matplotlib import 자동 제거**: LLM이 실수로 넣은 `import pandas`는 실행 전 strip (`pd`, `np`, `plt`는 이미 주입됨)
-- **30초 타임아웃**: 무한 루프 방지
-- **격리된 네임스페이스**: `files`, `last_result`, `pd`, `np`, `plt`, `matplotlib`, `save()`, `print()` 만 허용
-- **구조화된 결과 타입**: `result` 변수에 타입 힌트 dict를 반환하면 UI가 타입별로 렌더링
-
-```python
-# LLM 코드에서 사용 가능한 환경 (import 불필요)
-df = files["파일명.xlsx"]
-
-# DataFrame 반환
-result = df[df["매출"] >= 100]
-
-# 숫자 반환 — st.metric()으로 표시
-result = {"type": "number", "value": df["매출"].sum()}
-
-# 차트 반환 — PNG 이미지로 인라인 표시
-fig, ax = plt.subplots()
-df.groupby("지역")["매출"].sum().plot(kind="bar", ax=ax)
-result = {"type": "plot", "value": fig}
-
-# 저장
-save("필터결과.xlsx")
-```
-
-- **자동 오류 수정**: 실행 실패 시 에러 메시지와 원본 코드를 LLM에게 돌려보내 수정 코드를 받아 자동 재실행 (최대 2회)
-  - `correction_needed` 세션 상태로 UI와 오케스트레이션 레이어 간 신호 전달
-  - 수정 성공 시 결과에 "↩ 자동 수정 후 실행 완료" 표시
-
-### 5. 데이터 입력 범위 탐지 (`core/excel_processor.py`)
-
-업로드된 파일에서 실제 값이 입력된 셀 범위를 자동으로 탐지합니다.
-
-- **xlsx**: openpyxl 셀 이터레이션으로 min/max 행·열 계산
-- **csv**: pandas `notna()` 마스크로 범위 추정
-- 결과: `범위: 1행~50행 / 1열~5열 | 채워진 셀: 240/250 (96.0%)` 형태로 사이드바에 표시
-
-### 6. 데이터 품질 요약 (`ui/quality_report.py`)
-
-LLM 없이 업로드 직후 파일 메타데이터를 분석합니다.
-
-- 사이드바 파일 미리보기 하단: 결측치 TOP 3, Unnamed·중복 컬럼·타입 불일치 배지
-- `collect_files_info()` 결과를 `@st.cache_data`로 캐시해 반복 조회 비용 절감
-
-### 7. 멀티 모델 추상화 (`core/llm_client.py`)
-
-모든 프로바이더가 동일한 스트리밍 인터페이스를 사용합니다.
-
-```python
-client = get_client("Ollama", "qwen2.5", ollama_host="http://localhost:11434")
-client = get_client("Gemini", "gemini-2.0-flash", api_key="...")
-client = get_client("OpenAI", "gpt-4o", api_key="...")
-
-for token in client.chat_stream(messages, system_prompt):
-    ...
-```
-
-Ollama 소형 모델(7b/8b/3b/1b/mini 포함)은 compact 모드로 자동 전환되어 프롬프트 길이를 줄입니다.
-
----
-
-## 지원 모델
-
-**Ollama (로컬, 무료)**
-- 설치된 모델 자동 감지 (qwen2.5, deepseek-coder, gemma3 등)
-- 7b/8b/3b/1b/mini 포함 모델명은 compact 프롬프트 자동 적용
-
-**Google Gemini**
-- gemini-2.0-flash, gemini-1.5-flash, gemini-1.5-pro, gemini-2.0-flash-thinking-exp
-
-**OpenAI**
-- gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-3.5-turbo
-
----
-
-## 사용 예시
-
-### 단순 질문
-```
-사용자: 컬럼이 뭐가 있어?
-AI: a.xlsx의 컬럼은 날짜, 매출, 지역, 담당자, 상품명 총 5개입니다.
-```
-
-### 필터링
-```
-사용자: 매출 100 이상인 것만 뽑아줘
-AI: 매출 컬럼 기준으로 100 이상인 행만 추출합니다.
-    [코드 생성 → ▶ 코드 실행 버튼 → 결과 DataFrame 표시]
-```
-
-### 후속 필터링
-```
-사용자: 그중에서 서울만 보여줘
-AI: 직전 결과에서 지역이 서울인 행만 추출합니다.
-    [last_result 기반 코드 생성 → 실행]
-```
-
-### 후속 질문 추천
-```
-AI 답변 후 → [결측치 제거해줘] [Unnamed 열 삭제해줘] [지역별 합계해줘] 버튼 표시
-버튼 클릭 → 해당 문장이 다음 입력으로 자동 전달
-```
-
-### 파일 병합
-```
-사용자: 이거 합쳐줘
-AI: 두 파일의 공통 컬럼을 확인했습니다. '날짜'를 기준으로 병합할까요?
-```
-
-### 집계
-```
-사용자: 지역별 매출 합계 알려줘
-AI: 지역 기준으로 그룹화해 매출 합계를 계산합니다.
-    [코드 생성 → 실행 → 지역별 합계 표 + 다운로드 버튼]
-```
-
-### 숫자 결과
-```
-사용자: 전체 매출 합계 얼마야?
-AI: [코드 실행 → st.metric으로 "결과: 4,850,000" 표시]
-```
-
-### 차트 생성
-```
-사용자: 지역별 매출 막대 차트 그려줘
-AI: [코드 실행 → matplotlib 막대 차트 인라인 표시]
-```
-
-### 자동 오류 수정
-```
-AI: [잘못된 컬럼명으로 코드 생성 → 실행 실패]
-    → "코드 오류 자동 수정 중... (1/2)"
-    → LLM이 에러를 보고 수정 코드 생성 → 재실행
-    → "↩ 자동 수정 후 실행 완료"
+    DF --> PQ
+    PQ --> M & D & S & O & MT & C
+    M & D & S & O & MT & C --> BFP --> UI
+    UI --> AI --> Cache
 ```
 
 ---
@@ -352,7 +329,7 @@ AI: [잘못된 컬럼명으로 코드 생성 → 실행 실패]
 
 | 구분 | 사용 |
 |------|------|
-| UI | Streamlit |
+| UI | Streamlit 1.57 (`st.navigation`, `st.pills`, `st.dialog`) |
 | 데이터 | pandas, numpy, openpyxl, xlrd, matplotlib |
 | LLM | ollama, google-generativeai, openai |
 | 실행 환경 | Python 3.12+ |
@@ -361,7 +338,7 @@ AI: [잘못된 컬럼명으로 코드 생성 → 실행 실패]
 
 ## 참고 레포지토리
 
-- [SheetPilot](https://github.com/prof-lijar/sheetpilot) — 코드 실행 샌드박스, 파일 관리 구조 참고
-- [cowork-llm-lab](https://github.com/YYeoeun/cowork-llm-lab) — 엑셀 헤더 감지, 다중 파일 병합 로직 참고
-- [PandasAI](https://github.com/sinaptik-ai/pandas-ai) — 에러 자동 수정, 수치 통계 컨텍스트 주입, dtype 의미 매핑 아이디어 참고
-- [excelchat-streamlit](https://github.com/frank-flin/excelchat-streamlit) — 대화 히스토리 시스템 프롬프트 주입 구조 참고
+- [SheetPilot](https://github.com/prof-lijar/sheetpilot) — 코드 실행 샌드박스, 파일 관리 구조
+- [cowork-llm-lab](https://github.com/YYeoeun/cowork-llm-lab) — 엑셀 헤더 감지, 다중 파일 병합 로직
+- [PandasAI](https://github.com/sinaptik-ai/pandas-ai) — 에러 자동 수정, 수치 통계 컨텍스트 주입
+- [excelchat-streamlit](https://github.com/frank-flin/excelchat-streamlit) — 대화 히스토리 시스템 프롬프트 주입 구조

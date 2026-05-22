@@ -6,6 +6,7 @@ import streamlit as st
 
 from services.file_manager import list_files
 from core.intent import INTENT_LABEL, detect_intent
+from core.persona_manager import list_personas
 from core.prompts.builder import augment_user_prompt, build_system_prompt
 from core.chat_history import new_chat_id, save_chat
 from ui.components import intent_badge_html
@@ -91,6 +92,31 @@ if _uploaded_files:
 
     st.session_state.selected_files = list(_selected) if _selected else []
 
+    # ── 페르소나 선택 pills ────────────────────────────────────────────────
+    _personas = list_personas()
+    _p_names = ["자동"] + [p["name"] for p in _personas.values()]
+    _p_key_by_name = {p["name"]: k for k, p in _personas.items()}
+    _PERSONA_PILL_KEY = "persona_pill_sel"
+    if _PERSONA_PILL_KEY not in st.session_state:
+        st.session_state[_PERSONA_PILL_KEY] = "자동"
+
+    _col_p, _col_p_label = st.columns([9, 1])
+    with _col_p:
+        _sel_persona_name = st.pills(
+            "페르소나",
+            options=_p_names,
+            selection_mode="single",
+            key=_PERSONA_PILL_KEY,
+            label_visibility="collapsed",
+        )
+    with _col_p_label:
+        st.caption("페르소나")
+
+    if _sel_persona_name and _sel_persona_name != "자동":
+        st.session_state.selected_persona_key = _p_key_by_name.get(_sel_persona_name)
+    else:
+        st.session_state.selected_persona_key = None
+
     if not _selected:
         st.warning("분석할 파일을 하나 이상 선택하세요.")
         _files_info = []
@@ -153,6 +179,7 @@ if prompt:
             files_info, intent, compact=is_compact,
             last_result_info=last_result_info,
             recent_messages=st.session_state.messages,
+            persona_key=st.session_state.get("selected_persona_key"),
         )
 
         with st.chat_message("assistant"):

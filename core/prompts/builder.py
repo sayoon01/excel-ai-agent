@@ -1,8 +1,8 @@
 """시스템 프롬프트·사용자 프롬프트 조립."""
 from __future__ import annotations
 
-from core.intent import INTENT_LABEL, _INTENT_TO_PERSONA
-from core.prompts.personas import PERSONAS
+from core.intent import INTENT_LABEL
+from core.persona_manager import get_persona, resolve_persona_key
 from core.prompts.code_rules import CODE_RULES
 from core.prompts.examples import EXAMPLES
 
@@ -105,9 +105,11 @@ def build_system_prompt(
     compact: bool = False,
     last_result_info: dict | None = None,
     recent_messages: list[dict] | None = None,
+    persona_key: str | None = None,
 ) -> str:
-    persona_key = _INTENT_TO_PERSONA.get(intent, "analyst")
-    persona = PERSONAS[persona_key]
+    _key = persona_key or resolve_persona_key(intent)
+    p = get_persona(_key) or get_persona("analyst")
+    persona = p["system_prompt"]
 
     file_section = f"## 현재 업로드된 파일\n{_summarize_files(files_info)}"
     parts = [persona, file_section]

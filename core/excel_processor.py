@@ -56,49 +56,45 @@ def read_with_header(path: Path) -> pd.DataFrame:
 def read_excel_smart(path: Path, sheet_name: str | None = None) -> pd.DataFrame:
     """엑셀 파일 스마트 읽기.
 
-    1. 헤더 행 자동 탐지 (빈 행·제목 행 건너뜀)
-    2. 2행 헤더(멀티레벨) 감지 → '상위_하위' 형식으로 평탄화
-    3. 병합 헤더의 Unnamed 컬럼 → 앞 컬럼명 기반으로 이름 부여
-    4. 데이터 영역 텍스트 컬럼 병합셀(NaN) → ffill
-    5. 숫자처럼 생긴 문자열(쉼표 포함) → numeric 변환
-    6. 소수점 없는 float 컬럼 → Int64 다운캐스트
+    1. header=[0,1]로 먼저 읽고 의미 있는 서브헤더 수로 2단 여부 판단
+    2. 2단 확정 → MultiIndex 평탄화 / 아니면 단일 헤더 + Unnamed 처리
+    3. 텍스트 컬럼 ffill: 첫 번째 텍스트 컬럼(앵커)이 NaN인 행만 적용
+    4. 숫자처럼 생긴 문자열 → numeric 변환
+    5. 소수점 없는 float → Int64 다운캐스트
     """
     read_kw = {"sheet_name": sheet_name} if sheet_name is not None else {}
     try:
-        raw = pd.read_excel(path, header=None, **read_kw)
-        if raw.empty:
-            return raw
+        # ── 1단계: 2단 헤더 시도 ──────────────────────────────────────────
+        df_try = pd.read_excel(path, header=[0, 1], **read_kw)
+        if df_try.empty:
+            return df_try
 
-        header_row = detect_header_row(raw)
+        sub_meaningful = sum(
+            1 for c in df_try.columns
+            if isinstance(c, tuple)
+            and "Unnamed" not in str(c[1])
+            and str(c[1]).strip()
+        )
 
-        # ── 멀티레벨 헤더 감지 ─────────────────────────────────────────────
-        use_multi = False
-        if header_row + 1 < len(raw):
-            next_row = raw.iloc[header_row + 1]
-            non_null = next_row.count()
-            non_numeric = sum(
-                1 for v in next_row
-                if isinstance(v, str) and not _is_numeric_str(v)
-            )
-            if non_null >= 3 and non_numeric / max(non_null, 1) >= 0.5:
-                use_multi = True
-
-        if use_multi:
-            df = pd.read_excel(path, header=[header_row, header_row + 1], **read_kw)
-            df = _flatten_multiindex(df)
+        if sub_meaningful >= 3:
+            df = _flatten_multiindex(df_try)
         else:
-            df = pd.read_excel(path, header=header_row, **read_kw)
-            df = _fix_unnamed_cols(df, raw.iloc[header_row])
+            df = pd.read_excel(path, **read_kw)
+            df = _fix_unnamed_cols(df)
 
-        # ── 텍스트 컬럼 병합셀(NaN) → ffill ───────────────────────────────
+        # ── 2단계: 텍스트 컬럼 ffill (앵커 컬럼 기준) ────────────────────
         text_cols = df.select_dtypes(include=["object"]).columns
-        if len(text_cols):
-            df[text_cols] = df[text_cols].ffill()
+        if len(text_cols) > 0:
+            anchor = text_cols[0]
+            is_continuation = df[anchor].isna()      # 병합셀 연속 행
+            df[anchor] = df[anchor].ffill()
+            for col in text_cols[1:]:
+                df.loc[is_continuation, col] = (
+                    df.loc[is_continuation, col].ffill()
+                )
 
-        # ── 숫자처럼 생긴 문자열 → numeric ────────────────────────────────
+        # ── 3단계: 숫자 변환, float→Int64 ────────────────────────────────
         df = _coerce_numeric_cols(df)
-
-        # ── 소수점 없는 float → Int64 ──────────────────────────────────────
         df = _downcast_floats(df)
 
         return df
@@ -131,27 +127,21 @@ def _flatten_multiindex(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _fix_unnamed_cols(df: pd.DataFrame, header_series: pd.Series) -> pd.DataFrame:
+def _fix_unnamed_cols(df: pd.DataFrame) -> pd.DataFrame:
     """병합 헤더로 생긴 Unnamed 컬럼에 '이전컬럼명_N' 형식으로 이름 부여."""
     cols = list(df.columns)
-    raw_vals = header_series.tolist()
     last_named: str | None = None
     suffix_cnt: dict[str, int] = {}
 
-    for i, (col, raw_val) in enumerate(zip(cols, raw_vals)):
+    for i, col in enumerate(cols):
         col_str = str(col)
         if col_str.startswith("Unnamed:"):
-            raw_str = "" if pd.isna(raw_val) else str(raw_val).strip()
-            if raw_str and not raw_str.startswith("Unnamed"):
-                # 원본 값이 있으면 그걸 사용
-                last_named = raw_str
-                suffix_cnt[last_named] = suffix_cnt.get(last_named, 0)
-                cols[i] = last_named
-            elif last_named:
+            if last_named:
                 suffix_cnt[last_named] = suffix_cnt.get(last_named, 0) + 1
                 cols[i] = f"{last_named}_{suffix_cnt[last_named]}"
         else:
             last_named = col_str
+            suffix_cnt = {}
 
     df.columns = cols
     return df

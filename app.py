@@ -16,8 +16,9 @@ init_session_state()
 render_sidebar()
 
 pg = st.navigation([
-    st.Page("pages/0_채팅.py",   title="AI 채팅",  icon="💬"),
-    st.Page("pages/1_파일관리.py", title="파일관리", icon="📂"),
-    st.Page("pages/2_설정.py",   title="설정",     icon="⚙️"),
+    st.Page("pages/0_채팅.py",    title="AI 채팅",    icon="💬"),
+    st.Page("pages/1_파일관리.py", title="파일관리",   icon="📂"),
+    st.Page("pages/3_페르소나.py", title="페르소나",   icon="🎭"),
+    st.Page("pages/2_설정.py",    title="설정",       icon="⚙️"),
 ])
 pg.run()
