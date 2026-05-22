@@ -1,10 +1,11 @@
 # Excel AI Platform
 
-<img width="1110" height="1270" alt="image" src="https://github.com/user-attachments/assets/8441c8e5-955c-49dc-8e26-388e4a2cab05" />
+<img width="1408" height="2338" alt="image" src="https://github.com/user-attachments/assets/355c5062-8ed8-4b97-a948-36584a4282ae" />
+
 
 엑셀·CSV 파일을 업로드하고 AI와 대화하면서 데이터를 분석·변환·병합하는 Streamlit 기반 대화형 앱입니다.
 
-**저장소:** [github.com/sayoon01/excel-ai-agent](https://github.com/sayoon01/excel-ai-agent)
+
 
 ---
 
