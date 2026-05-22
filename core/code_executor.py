@@ -10,6 +10,10 @@ import uuid
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.llm_client import LLMClient
 
 import matplotlib
 matplotlib.use("Agg")
@@ -18,6 +22,14 @@ import numpy as np
 import pandas as pd
 
 from services.file_manager import RESULT_DIR, list_files, read_file
+
+_CORRECTION_SYSTEM = (
+    "Python/pandas 코드 디버거입니다. 오류를 수정한 코드 블록만 반환하세요. 설명 불필요.\n"
+    "환경: files(dict), pd, np, plt 주입됨. import 문 사용 불가. "
+    "최종 결과는 반드시 result 변수에 저장."
+)
+
+_CODE_BLOCK_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL)
 
 # pd, np, plt, matplotlib은 namespace에 이미 주입 — import 문만 조용히 제거
 _PRE_INJECTED_IMPORT = re.compile(
@@ -100,6 +112,46 @@ def _make_safe_builtins() -> dict:
     return safe
 
 
+def _apply_xlsx_formatting(dest: Path, df: pd.DataFrame) -> None:
+    """openpyxl로 헤더 볼드, 숫자 천단위 포맷, 컬럼 너비 자동 조정 적용."""
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+
+        wb = openpyxl.load_workbook(dest)
+        ws = wb.active
+
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF")
+        num_fmt = '#,##0.##'
+
+        numeric_col_indices = {
+            i + 1
+            for i, col in enumerate(df.columns)
+            if pd.api.types.is_numeric_dtype(df[col])
+        }
+
+        for col_idx, cell in enumerate(ws[1], start=1):
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        for col_idx in range(1, ws.max_column + 1):
+            col_letter = get_column_letter(col_idx)
+            max_len = 0
+            for row_idx, cell in enumerate(ws[col_letter]):
+                if col_idx in numeric_col_indices and row_idx > 0:
+                    cell.number_format = num_fmt
+                val = str(cell.value) if cell.value is not None else ""
+                max_len = max(max_len, len(val))
+            ws.column_dimensions[col_letter].width = min(max(max_len + 2, 8), 40)
+
+        wb.save(dest)
+    except Exception:
+        pass
+
+
 def _make_save_fn(saved_files: list[str], namespace: dict):
     def save(filename: str, df: pd.DataFrame | None = None):
         if df is None:
@@ -119,6 +171,7 @@ def _make_save_fn(saved_files: list[str], namespace: dict):
             df.to_csv(dest, index=False)
         else:
             df.to_excel(dest, index=False)
+            _apply_xlsx_formatting(dest, df)
         saved_files.append(name)
     return save
 
@@ -153,6 +206,8 @@ def execute(
     code: str,
     timeout_seconds: int = 30,
     last_result: pd.DataFrame | None = None,
+    selected_sheets: dict[str, str] | None = None,
+    selected_files: list[str] | None = None,
 ) -> ExecutionResult:
     code = _strip_preinjected_imports(code)
     violations = _validate_code(code)
@@ -163,7 +218,10 @@ def execute(
         )
 
     saved_files: list[str] = []
-    files = {fname: read_file(fname) for fname in list_files()}
+    _sheets = selected_sheets or {}
+    _file_filter = set(selected_files) if selected_files else None
+    all_fnames = [f for f in list_files() if _file_filter is None or f in _file_filter]
+    files = {fname: read_file(fname, sheet_name=_sheets.get(fname)) for fname in all_fnames}
     files = {k: v for k, v in files.items() if v is not None}
 
     namespace: dict = {
@@ -225,7 +283,9 @@ def execute(
     # save() 없이 result만 있으면 results/에 자동 저장 (사이드바·다운로드 버튼 연동)
     if result_df is not None and not saved_files:
         auto_name = f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        result_df.to_excel(RESULT_DIR / auto_name, index=False)
+        auto_dest = RESULT_DIR / auto_name
+        result_df.to_excel(auto_dest, index=False)
+        _apply_xlsx_formatting(auto_dest, result_df)
         saved_files.append(auto_name)
 
     return ExecutionResult(
@@ -236,3 +296,49 @@ def execute(
         result_value=result_value,
         saved_files=saved_files,
     )
+
+
+def execute_with_retry(
+    code: str,
+    last_result: pd.DataFrame | None = None,
+    client: "LLMClient | None" = None,
+    original_question: str = "",
+    max_attempts: int = 3,
+    selected_sheets: dict[str, str] | None = None,
+    selected_files: list[str] | None = None,
+) -> ExecutionResult:
+    """코드를 실행하고 실패 시 LLM에게 수정을 요청해 재시도한다.
+
+    client가 None이면 단순 execute()와 동일하게 동작한다.
+    """
+    _exec_kw = {"selected_sheets": selected_sheets, "selected_files": selected_files}
+    result = execute(code, last_result=last_result, **_exec_kw)
+    if result.success or client is None:
+        return result
+
+    current_code = code
+    for _ in range(max_attempts - 1):
+        correction_msg = (
+            f"원래 질문: {original_question}\n\n"
+            f"실행한 코드:\n```python\n{current_code}\n```\n\n"
+            f"오류 메시지:\n{result.error}\n\n수정된 코드를 제공해주세요."
+        )
+        try:
+            raw = "".join(client.chat_stream(
+                [{"role": "user", "content": correction_msg}],
+                _CORRECTION_SYSTEM,
+            ))
+        except Exception:
+            break
+
+        codes = _CODE_BLOCK_RE.findall(raw)
+        if not codes:
+            break
+
+        current_code = codes[0]
+        result = execute(current_code, last_result=last_result, **_exec_kw)
+        if result.success:
+            result.is_corrected = True
+            return result
+
+    return result

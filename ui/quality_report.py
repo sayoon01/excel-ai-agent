@@ -4,14 +4,13 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from services.file_manager import read_file
-from core.prompt_builder import collect_files_info
+from services.file_manager import collect_files_info
 
 
 @st.cache_data(show_spinner=False)
 def load_files_info(file_names: tuple) -> list[dict]:
     """파일 목록이 바뀌지 않으면 캐시된 결과를 재사용."""
-    return collect_files_info(lambda: list(file_names), read_file)
+    return collect_files_info(list(file_names))
 
 
 def render_compact_quality(fi: dict) -> None:

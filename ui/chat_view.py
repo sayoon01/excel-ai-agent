@@ -7,10 +7,11 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from core.code_executor import execute
+from core.code_executor import execute_with_retry
 from services.file_manager import RESULT_DIR
-from core.prompt_builder import _INTENT_LABEL
+from core.intent import INTENT_LABEL
 from ui.components import intent_badge_html, split_response
+from ui.helpers import get_llm_client
 
 
 def extract_code_blocks(text: str) -> list[str]:
@@ -70,21 +71,28 @@ def render_code_controls(msg_idx: int, content: str) -> None:
     code_blocks = extract_code_blocks(content)
     if code_blocks:
         if st.button("▶ 코드 실행", key=f"exec_{msg_idx}"):
-            with st.spinner("실행 중..."):
-                result = execute(
+            client, _ = get_llm_client(force_code=True)
+
+            original_question = ""
+            if msg_idx > 0:
+                prev = st.session_state.messages[msg_idx - 1]
+                if prev["role"] == "user":
+                    original_question = prev.get("display", prev["content"])
+
+            with st.spinner("실행 중... (오류 시 자동 수정)"):
+                _sel_files = st.session_state.get("selected_files") or None
+                result = execute_with_retry(
                     code_blocks[0],
                     last_result=st.session_state.last_result,
+                    client=client,
+                    original_question=original_question,
+                    selected_sheets=st.session_state.get("selected_sheets", {}),
+                    selected_files=_sel_files,
                 )
             st.session_state.exec_results[msg_idx] = result
             if result.success and result.result_df is not None:
                 st.session_state.last_result = result.result_df
                 st.session_state.result_history.append(result.result_df)
-            elif not result.success:
-                st.session_state.correction_needed[msg_idx] = {
-                    "code": code_blocks[0],
-                    "error": result.error,
-                    "attempt": 1,
-                }
             st.rerun()
 
 
@@ -112,7 +120,7 @@ def render_chat_history() -> None:
                 display_content = msg.get("display", msg["content"])
                 st.markdown(display_content)
                 if msg.get("intent"):
-                    label = _INTENT_LABEL.get(msg["intent"], msg["intent"])
+                    label = INTENT_LABEL.get(msg["intent"], msg["intent"])
                     st.markdown(
                         intent_badge_html(msg["intent"], label),
                         unsafe_allow_html=True,

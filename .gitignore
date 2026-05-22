@@ -1,5 +1,6 @@
 uploads/
 results/
+.chat_history/
 venv/
 __pycache__/
 *.pyc

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from core.excel_processor import format_used_range, get_used_range
+from core.excel_processor import format_used_range, get_used_range, read_excel_smart
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -36,26 +36,26 @@ def delete_file(name: str) -> bool:
     return False
 
 
-def read_file(name: str) -> pd.DataFrame | None:
+def read_file(name: str, sheet_name: str | None = None) -> pd.DataFrame | None:
     path = UPLOAD_DIR / name
     if not path.exists():
         return None
     if path.suffix.lower() == ".csv":
         return pd.read_csv(path)
-    return pd.read_excel(path)
+    return read_excel_smart(path, sheet_name=sheet_name)
 
 
-def preview_file(name: str, nrows: int = 10) -> pd.DataFrame | None:
-    path = UPLOAD_DIR / name
-    if not path.exists():
+def preview_file(name: str, nrows: int = 10, sheet_name: str | None = None) -> pd.DataFrame | None:
+    """read_file과 동일한 스마트 읽기 후 상위 nrows 행 반환."""
+    df = read_file(name, sheet_name=sheet_name)
+    if df is None:
         return None
-    if path.suffix.lower() == ".csv":
-        df = pd.read_csv(path, nrows=nrows)
-    else:
-        df = pd.read_excel(path, nrows=nrows)
-    # 쉼표 포함 숫자 문자열 등 Arrow 변환 불가 컬럼을 str로 강제 변환
+    df = df.head(nrows)
+    # Streamlit Arrow 직렬화 호환: Int64/object 컬럼을 안전하게 변환
     for col in df.columns:
-        if df[col].dtype == object:
+        if pd.api.types.is_extension_array_dtype(df[col]):
+            df[col] = df[col].astype(object)
+        elif df[col].dtype == object:
             df[col] = df[col].astype(str)
     return df
 
@@ -118,34 +118,63 @@ def delete_result(name: str) -> bool:
     return False
 
 
-def build_file_context(mode: str = "codegen") -> str:
-    files = list_files()
-    if not files:
-        return ""
-
-    if mode == "codegen":
-        parts = ["## 업로드된 파일:\n"]
-        for fname in files:
-            df = read_file(fname)
-            if df is None:
-                continue
-            parts.append(f'files["{fname}"]  # {len(df)}행 × {len(df.columns)}열')
-            parts.append(f"  컬럼: {', '.join(df.columns.astype(str))}")
-            parts.append(f"  타입: {dict(df.dtypes.astype(str))}")
-            parts.append("  샘플 (처음 5행):")
-            parts.append(df.head(5).to_string(index=False))
-            parts.append("")
-        return "\n".join(parts)
-
-    parts = ["사용자가 다음 파일들을 업로드했습니다:\n"]
-    for fname in files:
+def collect_files_info(file_names: list[str] | None = None) -> list[dict]:
+    """파일 목록의 메타데이터(컬럼 타입, 결측치, 통계 등)를 수집한다."""
+    names = file_names if file_names is not None else list_files()
+    result = []
+    for fname in names:
         df = read_file(fname)
         if df is None:
             continue
-        parts.append(f"## 파일: {fname} ({len(df)}행 × {len(df.columns)}열)")
-        parts.append(f"컬럼: {', '.join(df.columns.astype(str))}")
-        parts.append(df.head(20).to_string(index=False))
-        if len(df) > 20:
-            parts.append(f"... ({len(df) - 20}개 행 더 있음)")
-        parts.append("")
-    return "\n".join(parts)
+
+        mixed_type_cols = []
+        for col in df.select_dtypes(include=["object", "string"]).columns:
+            sample = df[col].dropna().head(100)
+            if len(sample) > 0:
+                ratio = pd.to_numeric(sample, errors="coerce").notna().mean()
+                if ratio >= 0.7:
+                    mixed_type_cols.append(str(col))
+
+        head_sample = []
+        for _, row in df.head(2).iterrows():
+            head_sample.append({
+                str(k): (str(v)[:30] if pd.notna(v) else None)
+                for k, v in row.items()
+            })
+
+        numeric_stats: dict[str, dict] = {}
+        for col in df.select_dtypes(include="number").columns:
+            s = df[col].dropna()
+            if len(s) > 0:
+                numeric_stats[str(col)] = {
+                    "min":  round(float(s.min()),  2),
+                    "mean": round(float(s.mean()), 2),
+                    "max":  round(float(s.max()),  2),
+                }
+
+        string_stats: dict[str, dict] = {}
+        for col in df.select_dtypes(include=["object", "string"]).columns:
+            if str(col) in mixed_type_cols:
+                continue
+            vc = df[col].dropna().value_counts()
+            if len(vc) > 0:
+                string_stats[str(col)] = {
+                    "unique": int(df[col].nunique()),
+                    "top": [str(v) for v in vc.index[:3].tolist()],
+                }
+
+        result.append({
+            "name": fname,
+            "rows": len(df),
+            "columns": len(df.columns),
+            "col_names": list(df.columns.astype(str)),
+            "null_counts": df.isnull().sum().to_dict(),
+            "dtypes": df.dtypes.astype(str).to_dict(),
+            "mixed_type_cols": mixed_type_cols,
+            "head_sample": head_sample,
+            "numeric_stats": numeric_stats,
+            "string_stats": string_stats,
+        })
+    return result
+
+

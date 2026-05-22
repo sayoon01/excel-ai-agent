@@ -53,6 +53,134 @@ def read_with_header(path: Path) -> pd.DataFrame:
     return df
 
 
+def read_excel_smart(path: Path, sheet_name: str | None = None) -> pd.DataFrame:
+    """엑셀 파일 스마트 읽기.
+
+    1. 헤더 행 자동 탐지 (빈 행·제목 행 건너뜀)
+    2. 2행 헤더(멀티레벨) 감지 → '상위_하위' 형식으로 평탄화
+    3. 병합 헤더의 Unnamed 컬럼 → 앞 컬럼명 기반으로 이름 부여
+    4. 데이터 영역 텍스트 컬럼 병합셀(NaN) → ffill
+    5. 숫자처럼 생긴 문자열(쉼표 포함) → numeric 변환
+    6. 소수점 없는 float 컬럼 → Int64 다운캐스트
+    """
+    read_kw = {"sheet_name": sheet_name} if sheet_name is not None else {}
+    try:
+        raw = pd.read_excel(path, header=None, **read_kw)
+        if raw.empty:
+            return raw
+
+        header_row = detect_header_row(raw)
+
+        # ── 멀티레벨 헤더 감지 ─────────────────────────────────────────────
+        use_multi = False
+        if header_row + 1 < len(raw):
+            next_row = raw.iloc[header_row + 1]
+            non_null = next_row.count()
+            non_numeric = sum(
+                1 for v in next_row
+                if isinstance(v, str) and not _is_numeric_str(v)
+            )
+            if non_null >= 3 and non_numeric / max(non_null, 1) >= 0.5:
+                use_multi = True
+
+        if use_multi:
+            df = pd.read_excel(path, header=[header_row, header_row + 1], **read_kw)
+            df = _flatten_multiindex(df)
+        else:
+            df = pd.read_excel(path, header=header_row, **read_kw)
+            df = _fix_unnamed_cols(df, raw.iloc[header_row])
+
+        # ── 텍스트 컬럼 병합셀(NaN) → ffill ───────────────────────────────
+        text_cols = df.select_dtypes(include=["object"]).columns
+        if len(text_cols):
+            df[text_cols] = df[text_cols].ffill()
+
+        # ── 숫자처럼 생긴 문자열 → numeric ────────────────────────────────
+        df = _coerce_numeric_cols(df)
+
+        # ── 소수점 없는 float → Int64 ──────────────────────────────────────
+        df = _downcast_floats(df)
+
+        return df
+    except Exception:
+        return pd.read_excel(path, **read_kw)
+
+
+# ── read_excel_smart 내부 헬퍼 ────────────────────────────────────────────────
+
+def _flatten_multiindex(df: pd.DataFrame) -> pd.DataFrame:
+    """MultiIndex 컬럼을 '상위_하위' 단일 레벨로 평탄화."""
+    new_cols = []
+    for col in df.columns:
+        if isinstance(col, tuple):
+            parts = [str(c).strip() for c in col if not str(c).startswith("Unnamed")]
+            new_cols.append("_".join(parts) if parts else f"col_{len(new_cols)}")
+        else:
+            new_cols.append(str(col))
+    # 중복 컬럼명 처리
+    counts: dict[str, int] = {}
+    result = []
+    for name in new_cols:
+        if name in counts:
+            counts[name] += 1
+            result.append(f"{name}_{counts[name]}")
+        else:
+            counts[name] = 0
+            result.append(name)
+    df.columns = result
+    return df
+
+
+def _fix_unnamed_cols(df: pd.DataFrame, header_series: pd.Series) -> pd.DataFrame:
+    """병합 헤더로 생긴 Unnamed 컬럼에 '이전컬럼명_N' 형식으로 이름 부여."""
+    cols = list(df.columns)
+    raw_vals = header_series.tolist()
+    last_named: str | None = None
+    suffix_cnt: dict[str, int] = {}
+
+    for i, (col, raw_val) in enumerate(zip(cols, raw_vals)):
+        col_str = str(col)
+        if col_str.startswith("Unnamed:"):
+            raw_str = "" if pd.isna(raw_val) else str(raw_val).strip()
+            if raw_str and not raw_str.startswith("Unnamed"):
+                # 원본 값이 있으면 그걸 사용
+                last_named = raw_str
+                suffix_cnt[last_named] = suffix_cnt.get(last_named, 0)
+                cols[i] = last_named
+            elif last_named:
+                suffix_cnt[last_named] = suffix_cnt.get(last_named, 0) + 1
+                cols[i] = f"{last_named}_{suffix_cnt[last_named]}"
+        else:
+            last_named = col_str
+
+    df.columns = cols
+    return df
+
+
+def _coerce_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """object 컬럼에서 50% 이상이 숫자(쉼표 포함)이면 numeric으로 변환."""
+    for col in df.select_dtypes(include=["object"]).columns:
+        cleaned = (
+            df[col].astype(str)
+            .str.replace(",", "", regex=False)
+            .str.strip()
+            .replace({"nan": pd.NA, "None": pd.NA, "": pd.NA})
+        )
+        numeric = pd.to_numeric(cleaned, errors="coerce")
+        if numeric.notna().mean() >= 0.5:
+            df[col] = numeric
+    return df
+
+
+def _downcast_floats(df: pd.DataFrame) -> pd.DataFrame:
+    """소수점이 없는 float64 컬럼 → pandas Int64 (nullable integer)."""
+    for col in df.select_dtypes(include=["float64"]).columns:
+        non_null = df[col].dropna()
+        if len(non_null) and (non_null % 1 == 0).all():
+            df[col] = df[col].astype("Int64")
+    return df
+
+
 # ── Column classification ──────────────────────────────────────────────────────
 
 def classify_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:
