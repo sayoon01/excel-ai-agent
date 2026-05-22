@@ -29,6 +29,7 @@ _DEFAULTS: dict = {
     "llm_temperature": 0.7,
     "llm_max_tokens": 4096,
     "compare_results": None,
+    "pipeline_states": {},   # {msg_idx: PipelineState}
 }
 
 

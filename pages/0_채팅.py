@@ -5,9 +5,10 @@ import pandas as pd
 import streamlit as st
 
 from services.file_manager import list_files
-from core.intent import INTENT_LABEL, detect_intent
+from core.intent import INTENT_LABEL
 from core.persona_manager import list_personas
-from core.prompts.builder import augment_user_prompt, build_system_prompt
+from core.pipeline import PipelineStage
+from core.pipeline_executor import parse_llm_response, run_pre_generation
 from core.chat_history import new_chat_id, save_chat
 from ui.components import intent_badge_html
 from ui.chat_view import render_chat_history, render_last_result_banner
@@ -140,8 +141,6 @@ prompt = _pending or st.chat_input("파일 분석, 병합, 필터링 등 무엇�
 
 if prompt:
     files_info = _files_info
-    intent = detect_intent(prompt)
-    st.session_state.last_intent = intent
 
     _lr = st.session_state.last_result
     last_result_info: dict | None = None
@@ -152,35 +151,42 @@ if prompt:
             "col_names": list(_lr.columns.astype(str)),
         }
 
-    augmented_prompt = augment_user_prompt(prompt, files_info, last_result_info)
+    # ── Step 1~3: Intent / Persona / Prompt 보강 (메트릭 수집) ──
+    selected_model = st.session_state.get("ollama_model", "") or ""
+    is_compact = st.session_state.provider == "Ollama" and any(
+        tag in selected_model.lower() for tag in ("7b", "8b", "3b", "1b", "mini")
+    )
+    state = run_pre_generation(
+        user_prompt=prompt,
+        files_info=files_info,
+        last_result_info=last_result_info,
+        persona_override=st.session_state.get("selected_persona_key"),
+        compact=is_compact,
+        recent_messages=st.session_state.messages,
+    )
+    st.session_state.last_intent = state.intent
 
     st.session_state.messages.append({
         "role": "user",
-        "content": augmented_prompt,
+        "content": state.augmented_prompt,
         "display": prompt,
-        "intent": intent,
+        "intent": state.intent,
     })
     with st.chat_message("user"):
         st.markdown(prompt)
-        label = INTENT_LABEL.get(intent, intent)
-        st.markdown(intent_badge_html(intent, label), unsafe_allow_html=True)
+        label = INTENT_LABEL.get(state.intent, state.intent)
+        st.markdown(intent_badge_html(state.intent, label), unsafe_allow_html=True)
 
-    client, error_msg = get_llm_client(intent=intent)
+    client, error_msg = get_llm_client(intent=state.intent)
 
     if error_msg:
         with st.chat_message("assistant"):
             st.error(error_msg)
     else:
-        selected_model = st.session_state.get("ollama_model", "") or ""
-        is_compact = st.session_state.provider == "Ollama" and any(
-            tag in selected_model.lower() for tag in ("7b", "8b", "3b", "1b", "mini")
-        )
-        system = build_system_prompt(
-            files_info, intent, compact=is_compact,
-            last_result_info=last_result_info,
-            recent_messages=st.session_state.messages,
-            persona_key=st.session_state.get("selected_persona_key"),
-        )
+        # ── Step 4: LLM 호출 (메트릭 수집) ──
+        state.model_name = selected_model
+        state.provider = st.session_state.provider
+        m_llm = state.start_stage(PipelineStage.LLM_THINKING)
 
         with st.chat_message("assistant"):
             _typing = st.empty()
@@ -197,7 +203,7 @@ if prompt:
             try:
                 response = st.write_stream(
                     _stream_with_indicator(
-                        client.chat_stream(st.session_state.messages, system)
+                        client.chat_stream(st.session_state.messages, state.system_prompt)
                     )
                 )
             except Exception as e:
@@ -205,8 +211,14 @@ if prompt:
                 response = f"오류가 발생했습니다: {e}"
                 st.error(response)
 
+        m_llm.finish()
+
+        # ── Step 5: 응답 파싱 ──
+        state = parse_llm_response(state, response)
+
         msg_idx = len(st.session_state.messages)
         st.session_state.messages.append({"role": "assistant", "content": response})
+        st.session_state.pipeline_states[msg_idx] = state
         save_chat(st.session_state.current_chat_id, st.session_state.messages)
 
         with st.spinner("후속 질문 생성 중..."):

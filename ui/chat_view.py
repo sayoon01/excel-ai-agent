@@ -12,10 +12,38 @@ from services.file_manager import RESULT_DIR
 from core.intent import INTENT_LABEL
 from ui.components import intent_badge_html, split_response
 from ui.helpers import get_llm_client
+from ui.thinking_panel import render_thinking_panel
+from ui.approval_panel import render_approval_panel
 
 
 def extract_code_blocks(text: str) -> list[str]:
     return re.findall(r"```python\s*\n(.*?)```", text, re.DOTALL)
+
+
+def _run_code(code: str, msg_idx: int) -> None:
+    """코드 실행 + 결과 세션 저장."""
+    client, _ = get_llm_client(force_code=True)
+
+    original_question = ""
+    if msg_idx > 0:
+        prev = st.session_state.messages[msg_idx - 1]
+        if prev["role"] == "user":
+            original_question = prev.get("display", prev["content"])
+
+    with st.spinner("실행 중... (오류 시 자동 수정)"):
+        result = execute_with_retry(
+            code,
+            last_result=st.session_state.last_result,
+            client=client,
+            original_question=original_question,
+            selected_sheets=st.session_state.get("selected_sheets", {}),
+            selected_files=st.session_state.get("selected_files") or None,
+        )
+    st.session_state.exec_results[msg_idx] = result
+    if result.success and result.result_df is not None:
+        st.session_state.last_result = result.result_df
+        st.session_state.result_history.append(result.result_df)
+    st.rerun()
 
 
 def render_code_controls(msg_idx: int, content: str) -> None:
@@ -68,32 +96,22 @@ def render_code_controls(msg_idx: int, content: str) -> None:
             st.error(f"실행 오류:\n{exec_result.error}")
         return
 
+    # pipeline_states에 state가 있으면 승인 패널 사용
+    state = st.session_state.pipeline_states.get(msg_idx)
+    if state and state.has_code:
+        action = render_approval_panel(state, msg_idx)
+        if action in ("execute", "skip"):
+            if action == "execute":
+                _run_code(state.generated_code, msg_idx)
+            else:
+                st.caption("건너뛰었습니다.")
+        return
+
+    # pipeline_states 없는 과거 메시지 — 기존 단일 버튼 유지
     code_blocks = extract_code_blocks(content)
     if code_blocks:
         if st.button("▶ 코드 실행", key=f"exec_{msg_idx}"):
-            client, _ = get_llm_client(force_code=True)
-
-            original_question = ""
-            if msg_idx > 0:
-                prev = st.session_state.messages[msg_idx - 1]
-                if prev["role"] == "user":
-                    original_question = prev.get("display", prev["content"])
-
-            with st.spinner("실행 중... (오류 시 자동 수정)"):
-                _sel_files = st.session_state.get("selected_files") or None
-                result = execute_with_retry(
-                    code_blocks[0],
-                    last_result=st.session_state.last_result,
-                    client=client,
-                    original_question=original_question,
-                    selected_sheets=st.session_state.get("selected_sheets", {}),
-                    selected_files=_sel_files,
-                )
-            st.session_state.exec_results[msg_idx] = result
-            if result.success and result.result_df is not None:
-                st.session_state.last_result = result.result_df
-                st.session_state.result_history.append(result.result_df)
-            st.rerun()
+            _run_code(code_blocks[0], msg_idx)
 
 
 def render_follow_up_suggestions(suggestions: list[str]) -> None:
@@ -132,6 +150,9 @@ def render_chat_history() -> None:
                     with st.expander("코드 보기", expanded=False):
                         st.code(code, language="python")
                 render_code_controls(idx, msg["content"])
+                state = st.session_state.pipeline_states.get(idx)
+                if state:
+                    render_thinking_panel(state)
 
     # 후속 질문 추천 카드 (마지막 어시스턴트 메시지 뒤)
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
