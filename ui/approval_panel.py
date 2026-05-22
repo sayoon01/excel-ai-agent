@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from core.pipeline import PipelineState
+from core.execution.pipeline import PipelineState
 
 
 def render_approval_panel(state: PipelineState, msg_idx: int) -> str | None:
@@ -41,6 +41,15 @@ def render_approval_panel(state: PipelineState, msg_idx: int) -> str | None:
                 st.session_state[edit_key] = False
                 st.rerun()
         return None
+
+    # needs_approval=True(code fallback)이면 경고 표시
+    if state.task_config.get("needs_approval"):
+        conf = state.task_config.get("confidence", 0.0)
+        st.warning(
+            f"요청 의도를 명확히 파악하지 못했습니다 (신뢰도 {conf*100:.0f}%). "
+            "생성된 코드를 확인 후 실행하세요.",
+            icon="⚠️",
+        )
 
     # 일반 승인 버튼
     col1, col2, col3, col_info = st.columns([2, 1, 1, 3])

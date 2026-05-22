@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import streamlit as st
 
-from core.intent import INTENT_LABEL, detect_intent
-from core.model_comparator import run_comparison
+from core.routing.intent import INTENT_LABEL, detect_intent
+from core.llm.model_comparator import run_comparison
 from core.persona_manager import get_persona, list_personas
 from core.prompts.builder import augment_user_prompt, build_system_prompt
 from core.system_monitor import (
@@ -209,7 +209,7 @@ with tab_model:
 
     debug_input = st.text_area(
         "테스트할 입력",
-        placeholder="예: 매출 기준으로 필터해줘",
+        placeholder="예: 값 기준으로 필터해줘",
         height=80,
         key="debug_input",
     )

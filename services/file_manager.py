@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from core.excel_processor import format_used_range, get_used_range, read_excel_smart
-from core.quality_rules import profile_quality
+from core.data.excel_processor import format_used_range, get_used_range, read_excel_smart
+from core.data.quality_rules import profile_quality
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"

@@ -7,10 +7,9 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from core.code_executor import execute_with_retry
+from core.execution.code_executor import execute_with_retry
 from services.file_manager import RESULT_DIR
-from core.intent import INTENT_LABEL
-from ui.components import intent_badge_html, split_response
+from ui.components import split_response
 from ui.helpers import get_llm_client
 from ui.thinking_panel import render_thinking_panel
 from ui.approval_panel import render_approval_panel
@@ -43,6 +42,21 @@ def _run_code(code: str, msg_idx: int) -> None:
     if result.success and result.result_df is not None:
         st.session_state.last_result = result.result_df
         st.session_state.result_history.append(result.result_df)
+    # 세션 히스토리 기록
+    _hist = st.session_state.get("session_history")
+    if _hist is not None:
+        from core.execution.pipeline import ToolExecution
+        _rows = len(result.result_df) if result.result_df is not None else None
+        _hist.record(ToolExecution(
+            turn=msg_idx,
+            mode="code",
+            tool_name="",
+            user_prompt=original_question[:60],
+            success=result.success,
+            duration_ms=0,
+            result_rows=_rows,
+            chained=False,
+        ))
     st.rerun()
 
 
@@ -90,7 +104,10 @@ def render_code_controls(msg_idx: int, content: str) -> None:
                         "실행은 완료됐지만 저장할 표(result)가 없습니다. "
                         "코드에 `result = ...`가 포함되어 있는지 확인한 뒤 다시 실행해 주세요."
                     )
-                label = "↩ 자동 수정 후 실행 완료" if exec_result.is_corrected else "✓ 실행 완료"
+                if exec_result.is_corrected:
+                    label = f"↩ 자동 수정 {exec_result.correction_attempts}회 후 실행 완료"
+                else:
+                    label = "✓ 실행 완료"
                 st.caption(label)
         else:
             st.error(f"실행 오류:\n{exec_result.error}")
@@ -140,12 +157,6 @@ def render_chat_history() -> None:
             if msg["role"] == "user":
                 display_content = msg.get("display", msg["content"])
                 st.markdown(display_content)
-                if msg.get("intent"):
-                    label = INTENT_LABEL.get(msg["intent"], msg["intent"])
-                    st.markdown(
-                        intent_badge_html(msg["intent"], label),
-                        unsafe_allow_html=True,
-                    )
             else:  # assistant
                 narrative, code = split_response(msg["content"])
                 st.markdown(narrative)

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from core.llm_client import GEMINI_MODELS, OPENAI_MODELS, LLMClient, get_client
+from core.llm.llm_client import GEMINI_MODELS, OPENAI_MODELS, LLMClient, get_client
 
 # 코드 생성이 필요한 의도 — 코드 특화 모델로 라우팅
 _CODE_INTENTS = frozenset({"filter", "aggregate", "transform", "merge", "export"})
@@ -38,6 +38,9 @@ def init_session_state() -> None:
     for k, v in _DEFAULTS.items():
         if k not in st.session_state:
             st.session_state[k] = v
+    if "session_history" not in st.session_state:
+        from core.execution.pipeline import SessionHistory
+        st.session_state.session_history = SessionHistory()
 
 
 def get_llm_client(

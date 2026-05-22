@@ -3,18 +3,43 @@ from __future__ import annotations
 
 import re
 
-from core.intent import detect_intent
+from core.routing.intent import detect_intent
 from core.persona_manager import get_persona, resolve_persona_key
-from core.pipeline import PipelineStage, PipelineState
+from core.execution.pipeline import PipelineStage, PipelineState, ToolExecution
 from core.prompts.builder import augment_user_prompt, build_system_prompt
-from core.task_router import classify_task
+from core.routing.task_router import classify_task
+
+# tiktoken 인코딩 캐시 — 모델별로 한 번만 로드
+_ENCODER_CACHE: dict[str, object] = {}
+
+# OpenAI 모델명 → tiktoken 인코딩 이름
+_OPENAI_ENCODINGS = {
+    "gpt-4o":        "o200k_base",
+    "gpt-4o-mini":   "o200k_base",
+    "gpt-4-turbo":   "cl100k_base",
+    "gpt-4":         "cl100k_base",
+    "gpt-3.5-turbo": "cl100k_base",
+}
 
 
-def estimate_tokens(text: str) -> int:
-    """토큰 수 추정 (한국어: 글자 × 0.5, 영문 단어 × 1.3)."""
-    korean = sum(1 for c in text if "가" <= c <= "힣")
-    words = len(text.split())
-    return int(korean * 0.5 + words * 1.3)
+def _get_encoder(model_name: str = ""):
+    import tiktoken
+    enc_name = _OPENAI_ENCODINGS.get(model_name, "cl100k_base")
+    if enc_name not in _ENCODER_CACHE:
+        _ENCODER_CACHE[enc_name] = tiktoken.get_encoding(enc_name)
+    return _ENCODER_CACHE[enc_name]
+
+
+def estimate_tokens(text: str, model_name: str = "") -> int:
+    """tiktoken으로 토큰 수 계산.
+    OpenAI 모델은 해당 인코딩, 그 외(Gemini·Ollama)는 cl100k_base로 근사.
+    """
+    try:
+        enc = _get_encoder(model_name)
+        return len(enc.encode(text))
+    except Exception:
+        # tiktoken 로드 실패 시 글자 수 기반 폴백
+        return len(text) // 3
 
 
 def run_pre_generation(
@@ -73,14 +98,34 @@ def run_pre_generation(
         persona_key=state.persona_key,
         mode=state.mode,
     )
-    state.system_prompt_token_est = estimate_tokens(state.system_prompt)
+    state.system_prompt_token_est = estimate_tokens(state.system_prompt, state.model_name)
 
     return state
 
 
+def record_pipeline_run(
+    state: PipelineState,
+    turn: int,
+    success: bool,
+    result_rows: int | None = None,
+    chained: bool = False,
+) -> ToolExecution:
+    """PipelineState에서 ToolExecution 레코드를 생성해 반환."""
+    return ToolExecution(
+        turn=turn,
+        mode=state.mode,
+        tool_name=state.task_config.get("tool", ""),
+        user_prompt=state.user_prompt[:60],
+        success=success,
+        duration_ms=state.get_total_duration_ms(),
+        result_rows=result_rows,
+        chained=chained,
+    )
+
+
 def parse_llm_response(state: PipelineState, response: str) -> PipelineState:
     """LLM 응답에서 코드 블록과 설명 텍스트 분리."""
-    state.response_token_est = estimate_tokens(response)
+    state.response_token_est = estimate_tokens(response, state.model_name)
 
     code_blocks = re.findall(r"```python\s*\n(.*?)```", response, re.DOTALL)
     if code_blocks:

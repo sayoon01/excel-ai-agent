@@ -91,6 +91,23 @@ def _infer_chart_cols(
     return cat_col, num_cols_hit
 
 
+def _infer_scatter_cols(
+    df: pd.DataFrame, prompt: str
+) -> tuple[str | None, str | None]:
+    """산점도용 x·y 수치 컬럼 두 개 추론."""
+    prompt_lower = prompt.lower()
+    num_cols = _pick_numeric_cols(df)
+    hit = [c for c in num_cols if str(c).lower() in prompt_lower]
+    if len(hit) >= 2:
+        return hit[0], hit[1]
+    if len(hit) == 1 and len(num_cols) >= 2:
+        other = [c for c in num_cols if c != hit[0]]
+        return hit[0], other[0]
+    if len(num_cols) >= 2:
+        return num_cols[0], num_cols[1]
+    return None, None
+
+
 _PALETTE = ["#3B82F6", "#EF4444", "#10B981", "#F59E0B", "#8B5CF6", "#EC4899"]
 
 
@@ -149,6 +166,70 @@ def _line_chart(
     return fig
 
 
+def _scatter_chart(
+    df: pd.DataFrame, x_col: str, y_col: str, title: str
+) -> plt.Figure:
+    """산점도 + 추세선."""
+    import numpy as np
+    data = df[[x_col, y_col]].dropna()
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(data[x_col], data[y_col], alpha=0.6, color=_PALETTE[0],
+               edgecolors="white", s=60)
+    if len(data) >= 3:
+        z = np.polyfit(data[x_col], data[y_col], 1)
+        xs = [data[x_col].min(), data[x_col].max()]
+        ax.plot(xs, np.poly1d(z)(xs), "--", color=_PALETTE[1],
+                alpha=0.8, linewidth=1.5, label="추세선")
+        ax.legend(fontsize=10)
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(y_col)
+    ax.set_title(title, fontsize=14, pad=12)
+    fig.tight_layout()
+    return fig
+
+
+def _histogram_chart(df: pd.DataFrame, col: str, title: str) -> plt.Figure:
+    """단일 컬럼 히스토그램."""
+    data = df[col].dropna()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.hist(data, bins="auto", color=_PALETTE[0], edgecolor="white", alpha=0.85)
+    ax.set_xlabel(col)
+    ax.set_ylabel("빈도")
+    ax.set_title(title, fontsize=14, pad=12)
+    fig.tight_layout()
+    return fig
+
+
+def _boxplot_chart(
+    df: pd.DataFrame, y_cols: list[str], group_col: str | None, title: str
+) -> plt.Figure:
+    """박스플롯 — 그룹 컬럼이 있으면 그룹별, 없으면 컬럼별."""
+    fig, ax = plt.subplots(figsize=(max(8, len(y_cols) * 2 + 2), 5))
+    bp_kw = dict(
+        patch_artist=True,
+        medianprops=dict(color="black", linewidth=2),
+    )
+
+    if group_col and df[group_col].nunique() <= 12:
+        groups = df[group_col].dropna().unique()
+        data = [df.loc[df[group_col] == g, y_cols[0]].dropna().tolist() for g in groups]
+        bp = ax.boxplot(data, labels=[str(g) for g in groups], **bp_kw)
+        ax.set_xlabel(group_col)
+        ax.tick_params(axis="x", rotation=20)
+    else:
+        data = [df[c].dropna().tolist() for c in y_cols]
+        bp = ax.boxplot(data, labels=y_cols, **bp_kw)
+        ax.tick_params(axis="x", rotation=20)
+
+    for i, patch in enumerate(bp["boxes"]):
+        patch.set_facecolor(_PALETTE[i % len(_PALETTE)])
+        patch.set_alpha(0.6)
+
+    ax.set_title(title, fontsize=14, pad=12)
+    fig.tight_layout()
+    return fig
+
+
 def _pie_chart(df: pd.DataFrame, label_col: str, value_col: str, title: str) -> plt.Figure:
     top = df.nlargest(8, value_col) if len(df) > 8 else df
     fig, ax = plt.subplots(figsize=(7, 7))
@@ -185,30 +266,70 @@ def create_chart(files_info: list[dict], prompt: str = "", **kwargs) -> dict:
         chart_type = "pie"
     elif any(k in p for k in ["선", "line", "라인", "추이"]):
         chart_type = "line"
+    elif any(k in p for k in ["산점도", "scatter", "상관관계", "상관"]):
+        chart_type = "scatter"
+    elif any(k in p for k in ["히스토그램", "histogram", "분포도", "빈도분포"]):
+        chart_type = "histogram"
+    elif any(k in p for k in ["박스플롯", "박스", "boxplot", "box plot", "사분위", "분위수"]):
+        chart_type = "boxplot"
     else:
         chart_type = "bar"
 
-    x_col  = cat_col or df.columns[0]
-    y_disp = "·".join(y_cols) if len(y_cols) <= 3 else f"{y_cols[0]} 외 {len(y_cols)-1}개"
-    title  = f"{x_col} × {y_disp}"
-
     try:
-        if chart_type == "pie":
-            # 파이 차트는 단일 y만 지원
-            fig = _pie_chart(df, x_col, y_cols[0], title)
-        elif chart_type == "line":
-            fig = _line_chart(df, x_col, y_cols, title)
+        if chart_type == "scatter":
+            x_num, y_num = _infer_scatter_cols(df, prompt)
+            if x_num is None or y_num is None:
+                return {"type": "error", "message": "산점도에 사용할 수치형 컬럼이 2개 이상 필요합니다."}
+            title = f"{x_num} vs {y_num}"
+            fig = _scatter_chart(df, x_num, y_num, title)
+            label = f"SCATTER 차트 — {title}"
+            summary = f"{x_num}·{y_num} 산점도 생성 완료"
+
+        elif chart_type == "histogram":
+            cat_col, y_cols = _infer_chart_cols(df, prompt)
+            if not y_cols:
+                return {"type": "error", "message": "수치형 컬럼을 찾을 수 없습니다."}
+            col = y_cols[0]
+            title = f"{col} 분포"
+            fig = _histogram_chart(df, col, title)
+            label = f"HISTOGRAM — {title}"
+            summary = f"{col} 히스토그램 생성 완료"
+
+        elif chart_type == "boxplot":
+            cat_col, y_cols = _infer_chart_cols(df, prompt)
+            if not y_cols:
+                return {"type": "error", "message": "수치형 컬럼을 찾을 수 없습니다."}
+            title = "·".join(y_cols[:3]) + " 박스플롯"
+            fig = _boxplot_chart(df, y_cols[:4], cat_col, title)
+            label = f"BOXPLOT — {title}"
+            summary = f"{'·'.join(y_cols[:3])} 박스플롯 생성 완료"
+
         else:
-            fig = _bar_chart(df, x_col, y_cols, title)
+            cat_col, y_cols = _infer_chart_cols(df, prompt)
+            if not y_cols:
+                return {"type": "error", "message": "수치형 컬럼을 찾을 수 없습니다."}
+            x_col  = cat_col or df.columns[0]
+            y_disp = "·".join(y_cols) if len(y_cols) <= 3 else f"{y_cols[0]} 외 {len(y_cols)-1}개"
+            title  = f"{x_col} × {y_disp}"
+
+            if chart_type == "pie":
+                fig = _pie_chart(df, x_col, y_cols[0], title)
+            elif chart_type == "line":
+                fig = _line_chart(df, x_col, y_cols, title)
+            else:
+                fig = _bar_chart(df, x_col, y_cols, title)
+
+            series_info = f"{len(y_cols)}개 시리즈" if len(y_cols) > 1 else y_cols[0]
+            label = f"{chart_type.upper()} 차트 — {title}"
+            summary = f"{x_col} 기준 {series_info} {chart_type} 차트 생성 완료"
 
         path = _save_fig(fig)
     except Exception as exc:
         return {"type": "error", "message": f"차트 생성 오류: {exc}"}
 
-    series_info = f"{len(y_cols)}개 시리즈" if len(y_cols) > 1 else y_cols[0]
     return {
         "type": "plot",
         "value": path,
-        "label": f"{chart_type.upper()} 차트 — {title}",
-        "summary": f"{x_col} 기준 {series_info} {chart_type} 차트 생성 완료",
+        "label": label,
+        "summary": summary,
     }

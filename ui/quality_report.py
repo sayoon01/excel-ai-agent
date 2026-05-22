@@ -4,7 +4,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from core.quality_rules import bullets_from_profile
+from core.data.quality_rules import bullets_from_profile
 from services.comment_cache import load_comment, make_key, save_comment
 from services.file_manager import collect_files_info
 from ui.helpers import get_llm_client

@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.excel_processor import get_used_range, format_used_range
+from core.data.excel_processor import get_used_range, format_used_range
 
 # ── 검증 기준값 (실측치) ──────────────────────────────────────────────────────
 CASES = [

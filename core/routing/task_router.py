@@ -17,6 +17,14 @@ _TOOL_RULES: list[tuple[list[str], str, float]] = [
     (["결측치", "빈칸", "누락", "missing", "null"],              "analyze_missing", 0.95),
     (["컬럼", "열", "column"],                                   "get_profile",     0.85),
 
+    # 동일 양식 통합 — 집계보다 먼저 검사 (항목별 평균이 aggregate_data와 충돌 방지)
+    (["동일 양식", "같은 양식", "같은 형식", "같은 구조",
+      "항목별 평균", "항목 기준 평균",
+      "세로로 합치", "세로로 합쳐", "세로로 쌓",
+      "세로 병합", "세로로 통합", "세로로 합산"],               "merge_same_format", 0.94),
+    (["파일 통합", "파일들 통합", "하나로 통합",
+      "통합해", "통합해줘", "통합하고", "통합한 후"],            "merge_same_format", 0.85),
+
     # 집계
     (["합계", "총합", "sum", "총액"],                            "aggregate_data",  0.92),
     (["평균", "mean", "avg", "평균값"],                          "aggregate_data",  0.92),
@@ -32,17 +40,20 @@ _TOOL_RULES: list[tuple[list[str], str, float]] = [
       "보다 큰", "보다 작은", "포함된", "제외된", "결측 제거", "빈칸 제거"],    "filter_rows", 0.86),
     (["정렬", "순서", "내림차순", "오름차순", "sort"],                          "sort_rows",   0.90),
 
-    # 병합
+    # 일반 병합 (스키마 다른 파일 join/concat)
     (["병합", "합치", "조인", "merge", "join"],                  "merge_files",     0.90),
 
     # 저장 / 내보내기
     (["저장", "다운로드", "내보내기", "export", "엑셀로", "파일로"], "export_data",  0.88),
 
     # 차트 (tool 이름 없음 → needs_chart=True 로만 처리)
-    (["막대", "bar", "바차트"],                                  "create_chart",    0.88),
-    (["파이", "pie", "원형"],                                    "create_chart",    0.88),
-    (["선", "line", "라인", "추이"],                             "create_chart",    0.82),
-    (["차트", "그래프", "시각화", "plot"],                       "create_chart",    0.80),
+    (["막대", "bar", "바차트"],                                      "create_chart", 0.88),
+    (["파이", "pie", "원형"],                                        "create_chart", 0.88),
+    (["선", "line", "라인", "추이"],                                 "create_chart", 0.82),
+    (["산점도", "scatter", "상관관계"],                              "create_chart", 0.88),
+    (["히스토그램", "histogram", "분포도", "빈도분포"],              "create_chart", 0.88),
+    (["박스플롯", "boxplot", "box plot", "사분위", "분위수"],        "create_chart", 0.88),
+    (["차트", "그래프", "시각화", "plot"],                           "create_chart", 0.80),
 ]
 
 _LLM_RULES: list[tuple[list[str], float]] = [
@@ -66,17 +77,31 @@ _CODE_RULES: list[tuple[list[str], float]] = [
 _COMPLEXITY_HINTS = ["이면서", "동시에", "비교", "상관", "단계별", "여러", "복합", "원인"]
 
 # chart / summary / export 힌트
-_CHART_HINTS  = ["차트", "그래프", "시각화", "plot", "막대", "파이", "선", "bar", "pie", "line"]
+_CHART_HINTS   = [
+    "차트", "그래프", "시각화", "plot",
+    "막대", "파이", "선", "bar", "pie", "line",
+    "산점도", "scatter", "히스토그램", "histogram", "분포도",
+    "박스플롯", "boxplot", "사분위", "분위수",
+]
 _SUMMARY_HINTS = ["요약", "정리", "설명", "해석", "총평", "인사이트"]
 _EXPORT_HINTS  = ["저장", "다운로드", "내보내기", "export", "엑셀로", "파일로"]
 
+# 이전 결과 참조 키워드 — "방금 결과에서 합계" 같은 체이닝 감지
+_PREV_KW = {
+    "방금", "이전 결과", "그 결과", "마지막 결과",
+    "앞의 결과", "위의 결과", "저번 결과",
+    "필터한 결과", "정렬한 결과", "집계한 결과",
+    "그 데이터", "그것에서", "그거에서",
+}
+
 
 def _detect_options(prompt: str) -> dict:
-    """needs_chart / needs_summary / needs_export 감지."""
+    """needs_chart / needs_summary / needs_export / use_last_result 감지."""
     return {
-        "needs_chart":   any(h in prompt for h in _CHART_HINTS),
-        "needs_summary": any(h in prompt for h in _SUMMARY_HINTS),
-        "needs_export":  any(h in prompt for h in _EXPORT_HINTS),
+        "needs_chart":     any(h in prompt for h in _CHART_HINTS),
+        "needs_summary":   any(h in prompt for h in _SUMMARY_HINTS),
+        "needs_export":    any(h in prompt for h in _EXPORT_HINTS),
+        "use_last_result": any(k in prompt for k in _PREV_KW),
     }
 
 
@@ -90,11 +115,25 @@ def _rule_classify(prompt: str, intent: str) -> dict:
     """1차 rule 기반 분류."""
     options = _detect_options(prompt)
 
+    # ── 복합 조건 체크 (단일 키워드 루프보다 반드시 먼저 실행) ──────────────────
+
     # 차트 키워드 + 컬럼 키워드가 동시에 있으면 chart 우선 (get_profile 충돌 방지)
-    _CHART_KW = {"차트", "그래프", "시각화", "plot", "막대", "파이", "선", "bar", "pie", "line"}
+    _CHART_KW = {
+        "차트", "그래프", "시각화", "plot",
+        "막대", "파이", "선", "bar", "pie", "line",
+        "산점도", "scatter", "히스토그램", "histogram", "분포도",
+        "박스플롯", "boxplot", "사분위", "분위수",
+    }
     _COL_KW   = {"컬럼", "열", "column"}
     if any(k in prompt for k in _CHART_KW) and any(k in prompt for k in _COL_KW):
         return {"mode": "tool", "tool": "create_chart", "confidence": 0.86, **options}
+
+    # 통합/병합 + 평균 동시 → merge_same_format (aggregate_data 0.92보다 높게)
+    # "파일 통합 + 동일 표 항목 평균", "합쳐서 평균값으로" 같은 복합 요청 처리
+    _MERGE_KW = {"통합", "병합", "합치", "합쳐", "합산", "붙여", "모아"}
+    _AVG_KW   = {"평균", "평균값", "항목 평균", "동일 표", "항목별", "항목 기준", "mean", "avg"}
+    if any(k in prompt for k in _MERGE_KW) and any(k in prompt for k in _AVG_KW):
+        return {"mode": "tool", "tool": "merge_same_format", "confidence": 0.96, **options}
 
     # 체이닝 먼저 감지 — filter 키워드 + sort 키워드가 동시에 있으면 filter_then_sort
     if any(k in prompt for k in _FILTER_KW) and any(k in prompt for k in _SORT_KW):
@@ -205,10 +244,11 @@ def classify_task(prompt: str, intent: str, client=None) -> dict:
         return {
             "mode": "code",
             "tool": None,
-            "needs_chart":   task.get("needs_chart", False),
-            "needs_summary": task.get("needs_summary", False),
-            "needs_export":  task.get("needs_export", False),
-            "confidence":    task["confidence"],
+            "needs_chart":    task.get("needs_chart", False),
+            "needs_summary":  task.get("needs_summary", False),
+            "needs_export":   task.get("needs_export", False),
+            "needs_approval": True,        # 분류 불확실 → Approval panel 강제 표시
+            "confidence":     task["confidence"],
         }
 
     return task

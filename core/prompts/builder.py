@@ -1,7 +1,7 @@
 """시스템 프롬프트·사용자 프롬프트 조립."""
 from __future__ import annotations
 
-from core.intent import INTENT_LABEL
+from core.routing.intent import INTENT_LABEL
 from core.persona_manager import get_persona, resolve_persona_key
 from core.prompts.code_rules import CODE_RULES
 from core.prompts.examples import EXAMPLES

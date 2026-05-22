@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from core.llm_client import LLMClient
+    from core.llm.llm_client import LLMClient
+
+from functools import reduce
 
 import matplotlib
 matplotlib.use("Agg")
@@ -31,9 +33,9 @@ _CORRECTION_SYSTEM = (
 
 _CODE_BLOCK_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL)
 
-# pd, np, plt, matplotlib은 namespace에 이미 주입 — import 문만 조용히 제거
+# pd, np, plt, matplotlib, functools는 namespace에 이미 주입 — import 문만 조용히 제거
 _PRE_INJECTED_IMPORT = re.compile(
-    r"^[ \t]*(?:import (?:pandas|numpy|matplotlib)(?:\.\w+)*(?:\s+as\s+\w+)?|from (?:pandas|numpy|matplotlib)(?:\.\w+)*\b[^\n]*)[ \t]*(?:\n|$)",
+    r"^[ \t]*(?:import (?:pandas|numpy|matplotlib|functools)(?:\.\w+)*(?:\s+as\s+\w+)?|from (?:pandas|numpy|matplotlib|functools)(?:\.\w+)*\b[^\n]*)[ \t]*(?:\n|$)",
     re.MULTILINE,
 )
 
@@ -68,6 +70,7 @@ class ExecutionResult:
     result_type: str = ""      # "dataframe" | "number" | "string" | "plot"
     result_value: object = None
     is_corrected: bool = False
+    correction_attempts: int = 0
     saved_files: list[str] = field(default_factory=list)
 
 
@@ -231,6 +234,7 @@ def execute(
         "np": np,
         "plt": plt,
         "matplotlib": matplotlib,
+        "reduce": reduce,
         "result": None,
         "__builtins__": _make_safe_builtins(),
     }
@@ -298,6 +302,24 @@ def execute(
     )
 
 
+def _build_file_schema(
+    selected_files: list[str] | None,
+    selected_sheets: dict[str, str] | None,
+) -> str:
+    """사용 가능한 파일의 컬럼 목록 문자열 — 수정 프롬프트에 포함."""
+    _sheets = selected_sheets or {}
+    _filter = set(selected_files) if selected_files else None
+    lines: list[str] = []
+    for fname in list_files():
+        if _filter and fname not in _filter:
+            continue
+        df = read_file(fname, sheet_name=_sheets.get(fname))
+        if df is not None:
+            cols = ", ".join(f'"{c}"' for c in df.columns[:25])
+            lines.append(f"- {fname} ({len(df)}행): [{cols}]")
+    return "\n".join(lines) if lines else "(파일 없음)"
+
+
 def execute_with_retry(
     code: str,
     last_result: pd.DataFrame | None = None,
@@ -310,18 +332,30 @@ def execute_with_retry(
     """코드를 실행하고 실패 시 LLM에게 수정을 요청해 재시도한다.
 
     client가 None이면 단순 execute()와 동일하게 동작한다.
+    개선: 수정 프롬프트에 실제 파일 컬럼 정보를 포함해 컬럼명 오류 자동 수정.
     """
     _exec_kw = {"selected_sheets": selected_sheets, "selected_files": selected_files}
     result = execute(code, last_result=last_result, **_exec_kw)
     if result.success or client is None:
         return result
 
+    # 타임아웃·보안 위반은 재시도해도 해결 불가
+    _no_retry_signals = ("시간이 초과", "TimeoutError", "코드 검증 실패", "허용되지 않는")
+    if any(s in result.error for s in _no_retry_signals):
+        return result
+
+    # 수정 프롬프트에 포함할 실제 파일 스키마
+    _schema = _build_file_schema(selected_files, selected_sheets)
+
     current_code = code
+    attempts = 0
     for _ in range(max_attempts - 1):
         correction_msg = (
             f"원래 질문: {original_question}\n\n"
             f"실행한 코드:\n```python\n{current_code}\n```\n\n"
-            f"오류 메시지:\n{result.error}\n\n수정된 코드를 제공해주세요."
+            f"오류 메시지:\n{result.error}\n\n"
+            f"사용 가능한 파일과 실제 컬럼명:\n{_schema}\n\n"
+            f"위 컬럼명을 참고해 오류를 수정한 코드를 제공해주세요."
         )
         try:
             raw = "".join(client.chat_stream(
@@ -336,9 +370,12 @@ def execute_with_retry(
             break
 
         current_code = codes[0]
+        attempts += 1
         result = execute(current_code, last_result=last_result, **_exec_kw)
         if result.success:
             result.is_corrected = True
+            result.correction_attempts = attempts
             return result
 
+    result.correction_attempts = attempts
     return result

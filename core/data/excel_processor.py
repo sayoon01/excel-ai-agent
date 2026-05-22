@@ -76,7 +76,31 @@ def read_excel_smart(path: Path, sheet_name: str | None = None) -> pd.DataFrame:
             and str(c[1]).strip()
         )
 
-        if sub_meaningful >= 3:
+        # 병합된 부모 헤더 수 — Unnamed level-0이 많으면 진짜 2단 헤더 증거
+        unnamed_l0 = sum(
+            1 for c in df_try.columns
+            if isinstance(c, tuple) and "Unnamed" in str(c[0])
+        )
+
+        # level-1 의미값 중 숫자 비율 — 높으면 데이터 행이지 서브헤더가 아님
+        _l1_vals = [
+            str(c[1]) for c in df_try.columns
+            if isinstance(c, tuple)
+            and "Unnamed" not in str(c[1])
+            and str(c[1]).strip()
+        ]
+        _l1_numeric_ratio = (
+            sum(1 for v in _l1_vals if _is_numeric_str(v)) / len(_l1_vals)
+            if _l1_vals else 1.0
+        )
+
+        # 2단 헤더 확정: 의미 있는 서브헤더 >= 3
+        #   AND (병합 헤더 존재 OR 서브헤더가 라벨형 — 숫자 30% 미만)
+        _is_two_level = sub_meaningful >= 3 and (
+            unnamed_l0 >= 2 or _l1_numeric_ratio < 0.3
+        )
+
+        if _is_two_level:
             df = _flatten_multiindex(df_try)
         else:
             df = pd.read_excel(path, **read_kw)

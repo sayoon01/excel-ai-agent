@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from core.pipeline import PipelineStage, PipelineState
+from core.execution.pipeline import PipelineStage, PipelineState
 
 _STAGE_LABELS: dict[PipelineStage, tuple[str, str]] = {
     PipelineStage.INTENT:         ("Intent 분류",   "🎯"),
@@ -20,8 +20,9 @@ _TOOL_LABEL: dict[str, str] = {
     "aggregate_data":  "집계 (합계·평균)",
     "filter_rows":     "필터",
     "sort_rows":       "정렬",
-    "merge_files":     "파일 병합",
-    "create_chart":    "차트 생성",
+    "merge_files":       "파일 병합",
+    "merge_same_format": "동일 양식 통합",
+    "create_chart":      "차트 생성",
 }
 
 _INTENT_KO: dict[str, str] = {
@@ -160,3 +161,10 @@ def render_thinking_panel(state: PipelineState) -> None:
             f"System prompt: **~{state.system_prompt_token_est:,}** 토큰   "
             f"| 응답: **~{state.response_token_est:,}** 토큰"
         )
+
+        # ── 세션 실행 체인 (2턴 이상일 때만) ──
+        _hist = st.session_state.get("session_history")
+        if _hist is not None and _hist.total() >= 2:
+            _chain = _hist.chain_str()
+            if _chain:
+                st.caption(f"🔗 세션 체인: {_chain}")

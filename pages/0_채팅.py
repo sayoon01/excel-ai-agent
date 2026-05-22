@@ -5,14 +5,13 @@ import pandas as pd
 import streamlit as st
 
 from services.file_manager import list_files, RESULT_DIR
-from core.intent import INTENT_LABEL
 from core.persona_manager import list_personas
-from core.pipeline import PipelineStage
-from core.pipeline_executor import parse_llm_response, run_pre_generation
+from core.execution.pipeline import PipelineStage
+from core.execution.pipeline_executor import parse_llm_response, record_pipeline_run, run_pre_generation
 from core.chat_history import new_chat_id, save_chat
-from core.code_executor import ExecutionResult
+from core.execution.code_executor import ExecutionResult
 from core.tools.dispatcher import dispatch_tool
-from ui.components import intent_badge_html
+from ui.chat_layout import apply_chat_layout_styles, chat_input_spacer
 from ui.chat_view import render_chat_history, render_last_result_banner
 from ui.helpers import get_llm_client
 from ui.quality_report import load_files_info
@@ -50,6 +49,8 @@ def _generate_suggestions(client, user_msg: str, assistant_msg: str) -> list[str
     except Exception:
         return []
 
+
+apply_chat_layout_styles()
 
 st.header("AI와 대화하기")
 
@@ -134,6 +135,7 @@ render_chat_history()
 render_last_result_banner()
 
 # ── Chat input & handler ───────────────────────────────────────────────────────
+chat_input_spacer()
 
 _pending = st.session_state.get("pending_prompt")
 if _pending:
@@ -180,8 +182,6 @@ if prompt:
     })
     with st.chat_message("user"):
         st.markdown(prompt)
-        label = INTENT_LABEL.get(state.intent, state.intent)
-        st.markdown(intent_badge_html(state.intent, label), unsafe_allow_html=True)
 
     # ── Tool 모드: LLM 없이 직접 실행 ──────────────────────────────────────────
     tool_name = state.task_config.get("tool") or (
@@ -204,7 +204,8 @@ if prompt:
                 "confidence": state.task_config.get("confidence", 0.0),
             }
             _extra = {"llm_client": _classify_client}   # 컬럼명 LLM 추론용
-            if tool_name == "export_data":
+            # export_data는 항상, 나머지는 use_last_result 플래그가 있을 때만 전달
+            if tool_name == "export_data" or state.task_config.get("use_last_result"):
                 _extra["last_result"] = st.session_state.get("last_result")
             tool_result = dispatch_tool(tool_name, files_info, prompt=prompt, **_extra)
             m_tool.details["result_type"]  = tool_result.get("type", "")
@@ -284,6 +285,12 @@ if prompt:
         if exec_res.success and exec_res.result_df is not None:
             st.session_state.last_result = exec_res.result_df
             st.session_state.result_history.append(exec_res.result_df)
+        # 세션 히스토리 기록
+        _rows = len(exec_res.result_df) if exec_res.result_df is not None else None
+        _chained = state.task_config.get("use_last_result", False)
+        st.session_state.session_history.record(
+            record_pipeline_run(state, msg_idx, exec_res.success, _rows, _chained)
+        )
         save_chat(st.session_state.current_chat_id, st.session_state.messages)
         st.rerun()
 
@@ -329,6 +336,10 @@ if prompt:
         msg_idx = len(st.session_state.messages)
         st.session_state.messages.append({"role": "assistant", "content": response})
         st.session_state.pipeline_states[msg_idx] = state
+        # 세션 히스토리 기록
+        st.session_state.session_history.record(
+            record_pipeline_run(state, msg_idx, True)
+        )
         save_chat(st.session_state.current_chat_id, st.session_state.messages)
 
         with st.spinner("후속 질문 생성 중..."):

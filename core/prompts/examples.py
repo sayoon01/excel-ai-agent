@@ -104,31 +104,27 @@ result = df
         "full": """\
 ## 참고 예시 — 파일 병합
 
-사용자: "두 파일 합쳐줘"
-어시스턴트: 공통 컬럼을 먼저 확인하고 키 기준으로 병합합니다.
+사용자: "파일들 키 기준으로 합쳐줘" (n개 join)
+어시스턴트: 공통 키 컬럼을 기준으로 n개 파일을 순서대로 left join합니다.
+  파일이 2개든 5개든 같은 패턴을 씁니다.
 ```python
-df_a = files["{FILE_A}"]
-df_b = files["{FILE_B}"]
-common = set(df_a.columns) & set(df_b.columns)
-print(f"공통 컬럼: {common}")
-result = pd.merge(df_a, df_b, on="키컬럼", how="left")
-print(f"병합 결과: {len(df_a)}행 + {len(df_b)}행 → {len(result)}행")
+from functools import reduce
+
+dfs = list(files.values())
+
+# 공통 키 후보: 첫 파일과 나머지 모두에 있는 문자형 컬럼
+key_candidates = set(dfs[0].select_dtypes(exclude="number").columns)
+for df in dfs[1:]:
+    key_candidates &= set(df.select_dtypes(exclude="number").columns)
+key_col = list(key_candidates)[0] if key_candidates else None
+print(f"키 컬럼: {key_col}")
+
+result = reduce(lambda left, right: pd.merge(left, right, on=key_col, how="left"), dfs)
+print(f"병합 결과: {len(result)}행 × {len(result.columns)}열")
 save("merged.xlsx")
 ```
 
-사용자: "파일 3개 합쳐줘" (3개 이상 join)
-어시스턴트: 순서대로 체이닝해서 병합합니다. result는 마지막 병합 후에만 한 번 할당합니다.
-```python
-df_a = files["{FILE_A}"]
-df_b = files["{FILE_B}"]
-df_c = list(files.values())[2]   # 세 번째 파일
-step1 = pd.merge(df_a, df_b, on="키컬럼", how="left")
-result = pd.merge(step1, df_c, on="키컬럼", how="left")
-print(f"3파일 병합: {len(result)}행 × {len(result.columns)}열")
-save("merged_all.xlsx")
-```
-
-사용자: "같은 구조 파일 여러 개 세로로 붙여줘"
+사용자: "같은 구조 파일 여러 개 세로로 붙여줘" (n개 concat)
 어시스턴트: 동일 구조의 파일들을 수직으로 이어 붙입니다.
 ```python
 result = pd.concat(list(files.values()), ignore_index=True)
@@ -138,20 +134,18 @@ save("combined.xlsx")
         "compact": """\
 ## 병합 코드 패턴 (패턴 하나만 선택해서 사용할 것)
 ```python
-# 패턴 A: 2파일 left join
-df_a, df_b = files["{FILE_A}"], files["{FILE_B}"]
-result = pd.merge(df_a, df_b, on="키컬럼", how="left")
+from functools import reduce
+
+# 패턴 A: n파일 key join (2개든 5개든 동일)
+dfs = list(files.values())
+key_candidates = set(dfs[0].select_dtypes(exclude="number").columns)
+for df in dfs[1:]:
+    key_candidates &= set(df.select_dtypes(exclude="number").columns)
+key_col = list(key_candidates)[0]   # 추론된 키 컬럼
+result = reduce(lambda l, r: pd.merge(l, r, on=key_col, how="left"), dfs)
 save("merged.xlsx")
 
-# 패턴 B: 3파일 체이닝 join
-df_a = files["{FILE_A}"]
-df_b = files["{FILE_B}"]
-df_c = list(files.values())[2]
-step1 = pd.merge(df_a, df_b, on="키컬럼", how="left")
-result = pd.merge(step1, df_c, on="키컬럼", how="left")
-save("merged_all.xlsx")
-
-# 패턴 C: 세로 병합 (같은 구조)
+# 패턴 B: n파일 세로 병합 (같은 구조)
 result = pd.concat(list(files.values()), ignore_index=True)
 save("combined.xlsx")
 ```""",
@@ -306,19 +300,19 @@ save("output.xlsx")           # .xlsx 또는 .csv
 
 사용자: "컬럼이 뭐가 있어?"
 어시스턴트:
-**{FILE_A}** (N행): 날짜, 지역, 매출, 비용 — 총 4개
-**{FILE_B}** (M행): 날짜, 부서, 예산, 집행 — 총 4개
+**{FILE_A}** (N행): (실제 파일의 컬럼명을 그대로 나열) — 총 X개
+**{FILE_B}** (M행): (실제 파일의 컬럼명을 그대로 나열) — 총 Y개
 
 사용자: "몇 행이야?"
 어시스턴트: {FILE_A} N행, {FILE_B} M행입니다.
 
 사용자: "어떤 데이터야?"
-어시스턴트: (샘플 행을 참고해 내용을 추정하고 파일별로 한 줄씩 요약)
-**{FILE_A}**: N행 × M열. 날짜·지역·매출 구성 — 판매 실적 데이터로 보입니다.
-**{FILE_B}**: P행 × Q열. 부서·예산·집행 구성 — 예산 집행 현황 데이터로 보입니다.
+어시스턴트: (샘플 행과 컬럼명을 참고해 파일 성격을 추정하고 파일별로 한 줄씩 요약)
+**{FILE_A}**: N행 × M열. (실제 컬럼 구성 요약) — (데이터 성격 추정)
+**{FILE_B}**: P행 × Q열. (실제 컬럼 구성 요약) — (데이터 성격 추정)
 
 사용자: "파일 1개만 있을 때 — 컬럼이 뭐가 있어?"
-어시스턴트: {FILE_A} 컬럼은 날짜, 지역, 매출, 비용 총 4개입니다.
+어시스턴트: {FILE_A} 컬럼은 (실제 파일의 컬럼명을 그대로 나열) 총 X개입니다.
 
 사용자: "결측치 몇 개야?" (단일 숫자로 충분한 경우)
 어시스턴트:

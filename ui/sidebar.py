@@ -5,7 +5,7 @@ import streamlit as st
 
 from services.export import to_markdown
 from services.file_manager import list_files, save_uploaded
-from core.llm_client import GEMINI_MODELS, OPENAI_MODELS, list_ollama_models
+from core.llm.llm_client import GEMINI_MODELS, OPENAI_MODELS, list_ollama_models
 from core.chat_history import delete_chat, list_chats, load_chat, new_chat_id, save_chat
 
 
@@ -78,11 +78,14 @@ def render_sidebar() -> None:
                 save_chat(st.session_state.current_chat_id, st.session_state.messages)
                 st.session_state.messages = []
                 st.session_state.exec_results = {}
+                st.session_state.pipeline_states = {}
                 st.session_state.last_result = None
                 st.session_state.result_history = []
                 st.session_state.last_intent = None
                 st.session_state.suggestions = {}
                 st.session_state.current_chat_id = new_chat_id()
+                from core.execution.pipeline import SessionHistory
+                st.session_state.session_history = SessionHistory()
                 st.rerun()
         with col_exp:
             if st.session_state.get("messages"):
@@ -94,6 +97,26 @@ def render_sidebar() -> None:
                     mime="text/markdown",
                     use_container_width=True,
                 )
+
+        # ── 세션 통계 ─────────────────────────────────────────────────────────
+        _history = st.session_state.get("session_history")
+        if _history is not None and _history.total() > 0:
+            st.divider()
+            _counts = _history.tool_counts()
+            _chain  = _history.chain_str()
+            _rate   = _history.success_rate()
+            st.caption("📊 세션 통계")
+            for lbl, cnt in _counts.items():
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;'
+                    f'font-size:12px;padding:1px 0;">'
+                    f'<span>{lbl}</span><span><b>{cnt}회</b></span></div>',
+                    unsafe_allow_html=True,
+                )
+            if _chain:
+                st.caption(f"체인: {_chain}")
+            if _history.total() >= 3:
+                st.caption(f"성공률: {_rate*100:.0f}%")
 
         chats = list_chats()
         if chats:
