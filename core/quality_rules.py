@@ -6,7 +6,18 @@ import re
 import pandas as pd
 
 _SUMMARY_RE = re.compile(
-    r"소계|합계|총계|^계$|합 계|소 계|total|subtotal|grand.total",
+    # Korean
+    r"소계|합계|총계|^계$|합 계|소 계"
+    # Japanese
+    r"|合計|小計|総計|合 計|小 計"
+    # Chinese (Traditional & Simplified)
+    r"|總計|總額|总计|总额|小計|合計"
+    # English
+    r"|total|subtotal|grand.total|sum.total|grand.sum"
+    # German
+    r"|gesamt|zwischensumme|gesamtsumme"
+    # French / Spanish / Portuguese
+    r"|sous.total|sous total|totale|totales|subtotal",
     re.IGNORECASE,
 )
 
@@ -108,7 +119,7 @@ def bullets_from_profile(profile: dict) -> list[str]:
     # 집계 행
     summary = profile.get("summary_rows", 0)
     if summary > 0:
-        bullets.append(f"소계·합계 집계 행 {summary}개 포함 가능성")
+        bullets.append(f"집계(합계·소계·total 등) 행 {summary}개 포함 가능성")
 
     # 이상값
     for col, cnt in list(profile.get("numeric_outliers", {}).items())[:2]:

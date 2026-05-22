@@ -106,6 +106,7 @@ def build_system_prompt(
     last_result_info: dict | None = None,
     recent_messages: list[dict] | None = None,
     persona_key: str | None = None,
+    mode: str = "code",
 ) -> str:
     _key = persona_key or resolve_persona_key(intent)
     p = get_persona(_key) or get_persona("analyst")
@@ -127,10 +128,18 @@ def build_system_prompt(
         if conv:
             parts.append(f"## 이전 대화 맥락\n{conv}")
 
-    example_mode = "compact" if compact else "full"
-    raw_example = EXAMPLES.get(intent, EXAMPLES["query"])[example_mode]
-    example = _resolve_placeholders(raw_example, files_info)
-    parts.extend([example, CODE_RULES])
+    # llm 모드: 자연어 답변만 — CODE_RULES/EXAMPLES 제외
+    if mode == "llm":
+        parts.append(
+            "## 응답 방식\n"
+            "코드 없이 자연어로 간결하게 답변하세요. "
+            "파일 데이터를 참고해 구체적인 수치나 컬럼명을 언급하면 좋습니다."
+        )
+    else:
+        example_mode = "compact" if compact else "full"
+        raw_example = EXAMPLES.get(intent, EXAMPLES["query"])[example_mode]
+        example = _resolve_placeholders(raw_example, files_info)
+        parts.extend([example, CODE_RULES])
 
     return "\n\n".join(parts)
 

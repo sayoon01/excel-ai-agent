@@ -98,7 +98,10 @@ def render_code_controls(msg_idx: int, content: str) -> None:
 
     # pipeline_states에 state가 있으면 승인 패널 사용
     state = st.session_state.pipeline_states.get(msg_idx)
-    if state and state.has_code:
+    if state:
+        # llm 모드는 코드 없음 — 승인 패널 불필요
+        if state.mode == "llm" or not state.has_code:
+            return
         action = render_approval_panel(state, msg_idx)
         if action in ("execute", "skip"):
             if action == "execute":

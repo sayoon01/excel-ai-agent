@@ -40,6 +40,17 @@ class PipelineState:
 
     # 분류
     intent: str = ""
+    mode: str = "code"        # "llm" | "tool" | "code"
+    task_config: dict = field(default_factory=dict)
+    # task_config 예:
+    # {
+    #   "mode": "tool",
+    #   "tool": "aggregate_data",
+    #   "needs_chart": True,
+    #   "needs_summary": False,
+    #   "needs_export": False,
+    #   "confidence": 0.92,
+    # }
     persona_key: str = ""
     persona_name: str = ""
 

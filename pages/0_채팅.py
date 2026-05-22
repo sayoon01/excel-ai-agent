@@ -4,12 +4,14 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from services.file_manager import list_files
+from services.file_manager import list_files, RESULT_DIR
 from core.intent import INTENT_LABEL
 from core.persona_manager import list_personas
 from core.pipeline import PipelineStage
 from core.pipeline_executor import parse_llm_response, run_pre_generation
 from core.chat_history import new_chat_id, save_chat
+from core.code_executor import ExecutionResult
+from core.tools.dispatcher import dispatch_tool
 from ui.components import intent_badge_html
 from ui.chat_view import render_chat_history, render_last_result_banner
 from ui.helpers import get_llm_client
@@ -156,6 +158,9 @@ if prompt:
     is_compact = st.session_state.provider == "Ollama" and any(
         tag in selected_model.lower() for tag in ("7b", "8b", "3b", "1b", "mini")
     )
+    # confidence < 0.8인 애매한 케이스를 LLM이 직접 분류하도록 client 전달
+    _pre_client, _pre_err = get_llm_client(intent="query")
+    _classify_client = None if _pre_err else _pre_client
     state = run_pre_generation(
         user_prompt=prompt,
         files_info=files_info,
@@ -163,6 +168,7 @@ if prompt:
         persona_override=st.session_state.get("selected_persona_key"),
         compact=is_compact,
         recent_messages=st.session_state.messages,
+        llm_client=_classify_client,
     )
     st.session_state.last_intent = state.intent
 
@@ -176,6 +182,110 @@ if prompt:
         st.markdown(prompt)
         label = INTENT_LABEL.get(state.intent, state.intent)
         st.markdown(intent_badge_html(state.intent, label), unsafe_allow_html=True)
+
+    # ── Tool 모드: LLM 없이 직접 실행 ──────────────────────────────────────────
+    tool_name = state.task_config.get("tool") or (
+        "create_chart" if state.task_config.get("needs_chart") else None
+    )
+    if state.mode == "tool" and tool_name:
+        _tool_label = {
+            "get_row_count": "행 수 조회", "analyze_missing": "결측치 분석",
+            "get_profile": "컬럼 프로파일", "aggregate_data": "집계",
+            "filter_rows": "필터", "sort_rows": "정렬",
+            "merge_files": "파일 병합", "create_chart": "차트 생성",
+        }.get(tool_name, tool_name)
+
+        with st.spinner(f"🔧 {_tool_label} 실행 중..."):
+            m_tool = state.start_stage(PipelineStage.EXECUTING)
+            m_tool.details = {
+                "tool":       tool_name,
+                "tool_label": _tool_label,
+                "files":      [f.get("name", "") for f in files_info],
+                "confidence": state.task_config.get("confidence", 0.0),
+            }
+            _extra = {"llm_client": _classify_client}   # 컬럼명 LLM 추론용
+            if tool_name == "export_data":
+                _extra["last_result"] = st.session_state.get("last_result")
+            tool_result = dispatch_tool(tool_name, files_info, prompt=prompt, **_extra)
+            m_tool.details["result_type"]  = tool_result.get("type", "")
+            m_tool.details["result_label"] = tool_result.get("label", "")
+            m_tool.details["cached"]       = tool_result.get("cached", False)
+            m_tool.finish()
+
+        if tool_result.get("type") == "error":
+            answer = f"도구 실행 오류: {tool_result.get('message', '알 수 없는 오류')}"
+            exec_res = ExecutionResult(success=False, error=answer)
+        else:
+            import datetime
+            summary = tool_result.get("summary", "")
+            label   = tool_result.get("label", "결과")
+            answer  = f"**{label}**\n\n{summary}" if summary else f"**{label}**"
+            rtype   = tool_result.get("type", "string")
+            rval    = tool_result.get("value")
+            rdf     = rval if rtype == "dataframe" and isinstance(rval, pd.DataFrame) else None
+
+            saved: list[str] = []
+            needs_export = state.task_config.get("needs_export", False)
+            needs_chart  = state.task_config.get("needs_chart", False)
+
+            # DataFrame 저장 — needs_export 시 강조, 아니면 조용히 자동 저장
+            if rdf is not None:
+                ts    = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                fname = f"result_{ts}.xlsx"
+                dest  = RESULT_DIR / fname
+                rdf.to_excel(dest, index=False)
+                saved.append(fname)
+                if needs_export:
+                    answer += f"\n\n💾 **{fname}** 으로 저장되었습니다. 아래 버튼으로 다운로드하세요."
+
+            # needs_chart + DataFrame 결과가 있으면 집계 결과로 차트 자동 생성
+            if needs_chart and rdf is not None:
+                from core.tools.chart_tools import create_chart as _create_chart_fn
+                _chart_res = _create_chart_fn(files_info=files_info, prompt=prompt)
+                if _chart_res.get("type") == "plot":
+                    from pathlib import Path as _Path
+                    _cp = _Path(str(_chart_res["value"]))
+                    if _cp.exists():
+                        saved.append(_cp.name)
+                        answer += f"\n\n📊 차트도 함께 생성했습니다."
+
+            exec_res = ExecutionResult(
+                success=True,
+                result_df=rdf,
+                result_type=rtype,
+                result_value=rval if rdf is None else None,
+                saved_files=saved,
+            )
+
+        # needs_summary: tool 결과를 LLM이 자연어로 해석
+        needs_summary = state.task_config.get("needs_summary", False)
+        if needs_summary and exec_res.success and exec_res.result_df is not None:
+            _sum_client, _sum_err = get_llm_client(intent=state.intent)
+            if not _sum_err:
+                _df_preview = exec_res.result_df.head(10).to_markdown(index=False)
+                _sum_msgs = [{"role": "user", "content": (
+                    f"다음은 '{prompt}' 요청에 대한 분석 결과입니다:\n\n"
+                    f"{_df_preview}\n\n"
+                    "이 결과를 2~3문장으로 핵심만 한국어로 요약해줘."
+                )}]
+                try:
+                    with st.spinner("요약 생성 중..."):
+                        _summary_text = "".join(_sum_client.chat_stream(_sum_msgs, ""))
+                    if _summary_text.strip():
+                        answer = f"{answer}\n\n**요약**: {_summary_text.strip()}"
+                except Exception:
+                    pass
+
+        msg_idx = len(st.session_state.messages)
+        state = parse_llm_response(state, answer)
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        st.session_state.pipeline_states[msg_idx] = state
+        st.session_state.exec_results[msg_idx] = exec_res
+        if exec_res.success and exec_res.result_df is not None:
+            st.session_state.last_result = exec_res.result_df
+            st.session_state.result_history.append(exec_res.result_df)
+        save_chat(st.session_state.current_chat_id, st.session_state.messages)
+        st.rerun()
 
     client, error_msg = get_llm_client(intent=state.intent)
 
