@@ -25,7 +25,6 @@ _TOOL_LABEL: dict[str, str] = {
 class PipelineStage(str, Enum):
     INTENT          = "intent"
     PERSONA         = "persona"
-    PROMPT_ENHANCE  = "prompt_enhance"
     LLM_THINKING    = "llm_thinking"
     CODE_GENERATED  = "code_generated"
     EXECUTING       = "executing"
@@ -52,7 +51,6 @@ class StageMetrics:
 class PipelineState:
     # 입력
     user_prompt: str = ""
-    augmented_prompt: str = ""
 
     # 분류
     intent: str = ""

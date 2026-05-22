@@ -6,7 +6,7 @@ import re
 from core.routing.intent import detect_intent
 from core.persona_manager import get_persona, resolve_persona_key
 from core.execution.pipeline import PipelineStage, PipelineState, ToolExecution
-from core.prompts.builder import augment_user_prompt, build_system_prompt
+from core.prompts.builder import build_system_prompt
 from core.routing.task_router import classify_task
 
 # tiktoken 인코딩 캐시 — 모델별로 한 번만 로드
@@ -75,18 +75,6 @@ def run_pre_generation(
     state.persona_name = persona["name"] if persona else "기본"
     m2.details = {"key": state.persona_key, "name": state.persona_name}
     m2.finish()
-
-    # Step 3: Prompt 보강
-    m3 = state.start_stage(PipelineStage.PROMPT_ENHANCE)
-    state.augmented_prompt = augment_user_prompt(
-        user_prompt, files_info, last_result_info
-    )
-    m3.details = {
-        "original_len": len(user_prompt),
-        "augmented_len": len(state.augmented_prompt),
-        "was_enhanced": state.augmented_prompt != user_prompt,
-    }
-    m3.finish()
 
     # System prompt 빌드 (메트릭 포함)
     state.system_prompt = build_system_prompt(

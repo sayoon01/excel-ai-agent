@@ -6,7 +6,7 @@ import streamlit as st
 from core.routing.intent import INTENT_LABEL, detect_intent
 from core.llm.model_comparator import run_comparison
 from core.persona_manager import get_persona, list_personas
-from core.prompts.builder import augment_user_prompt, build_system_prompt
+from core.prompts.builder import build_system_prompt
 from core.system_monitor import (
     get_all_ollama_models, get_gpu_status, get_ollama_vram,
     get_system_status, load_ollama_model, unload_ollama_model,
@@ -220,13 +220,8 @@ with tab_model:
 
         st.caption(f"감지된 의도: **{INTENT_LABEL.get(_intent, _intent)}**")
 
-        col_user, col_sys = st.columns(2)
-        with col_user:
-            st.markdown("**사용자 프롬프트 (보강 후)**")
-            st.code(augment_user_prompt(debug_input, _fi), language="text")
-        with col_sys:
-            st.markdown("**시스템 프롬프트**")
-            st.code(build_system_prompt(_fi, _intent), language="text")
+        st.markdown("**시스템 프롬프트**")
+        st.code(build_system_prompt(_fi, _intent), language="text")
 
 # ── 탭 4: 비교 테스트 ───────────────────────────────────────────────────────
 with tab_compare:

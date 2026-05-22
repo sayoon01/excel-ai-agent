@@ -176,7 +176,7 @@ if prompt:
 
     st.session_state.messages.append({
         "role": "user",
-        "content": state.augmented_prompt,
+        "content": state.user_prompt,
         "display": prompt,
         "intent": state.intent,
     })

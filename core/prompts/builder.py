@@ -1,7 +1,6 @@
 """시스템 프롬프트·사용자 프롬프트 조립."""
 from __future__ import annotations
 
-from core.routing.intent import INTENT_LABEL
 from core.persona_manager import get_persona, resolve_persona_key
 from core.prompts.code_rules import CODE_RULES
 from core.prompts.examples import EXAMPLES
@@ -144,40 +143,3 @@ def build_system_prompt(
     return "\n\n".join(parts)
 
 
-def augment_user_prompt(
-    raw_prompt: str,
-    files_info: list[dict],
-    last_result_info: dict | None = None,
-) -> str:
-    all_cols: list[str] = []
-    for f in files_info:
-        all_cols.extend(f.get("col_names", []))
-    mentioned = list(dict.fromkeys(col for col in all_cols if len(col) >= 2 and col in raw_prompt))
-
-    null_warnings = []
-    for f in files_info:
-        null_cols = [
-            f"{col}({cnt}개)"
-            for col, cnt in f.get("null_counts", {}).items()
-            if cnt > 0
-        ]
-        if null_cols:
-            null_warnings.append(f"'{f['name']}' 결측치: {', '.join(null_cols)}")
-
-    if not mentioned and not null_warnings and not last_result_info:
-        return raw_prompt
-
-    lines = [raw_prompt, "", "---", "[자동 컨텍스트]"]
-    if mentioned:
-        lines.append(f"요청에서 언급된 컬럼: {', '.join(mentioned)}")
-    for w in null_warnings:
-        lines.append(f"주의 — {w}")
-    if last_result_info:
-        cols = ", ".join(last_result_info["col_names"])
-        lines.append(
-            f"직전 작업 결과(last_result): "
-            f"{last_result_info['rows']}행 × {last_result_info['columns']}열, "
-            f"컬럼: {cols}"
-        )
-
-    return "\n".join(lines)

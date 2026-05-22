@@ -8,7 +8,6 @@ from core.execution.pipeline import PipelineStage, PipelineState
 _STAGE_LABELS: dict[PipelineStage, tuple[str, str]] = {
     PipelineStage.INTENT:         ("Intent 분류",   "🎯"),
     PipelineStage.PERSONA:        ("Persona 결정",  "🎭"),
-    PipelineStage.PROMPT_ENHANCE: ("Prompt 보강",   "✨"),
     PipelineStage.LLM_THINKING:   ("LLM 응답",      "🤖"),
     PipelineStage.EXECUTING:      ("도구 실행",      "🔧"),
 }
@@ -138,20 +137,6 @@ def render_thinking_panel(state: PipelineState) -> None:
                     st.caption(f"결과: {d['result_label']} ({d.get('result_type', '')}){cached_tag}")
 
         st.divider()
-
-        # ── Prompt 보강 비교 ──
-        enhance_stage = next(
-            (s for s in state.stages if s.stage == PipelineStage.PROMPT_ENHANCE), None
-        )
-        if enhance_stage and enhance_stage.details.get("was_enhanced"):
-            with st.expander("Prompt 보강 내용 보기", expanded=False):
-                pcol1, pcol2 = st.columns(2)
-                with pcol1:
-                    st.caption("원본")
-                    st.code(state.user_prompt, language="text")
-                with pcol2:
-                    st.caption("보강 후")
-                    st.code(state.augmented_prompt, language="text")
 
         # ── 토큰 추정 + System prompt ──
         with st.expander("System prompt 전문 보기", expanded=False):

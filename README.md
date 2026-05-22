@@ -4,7 +4,7 @@
 
 엑셀·CSV 파일을 업로드하고 AI와 대화하면서 데이터를 분석·변환·병합하는 Streamlit 기반 대화형 앱입니다.
 
-> 작성일: 2026-05-22
+> 작성일: 2026-05-22 (최종 수정: 2026-05-22)
 
 ---
 
@@ -19,8 +19,8 @@
 | 파일 선택 pills | 채팅 화면에서 분석할 파일을 pill 버튼으로 다중 선택 |
 | 페르소나 관리 | 분석가·엔지니어·병합 전문가 등 AI 역할을 화면에서 생성·편집·복제 |
 | 채팅 페르소나 선택 | 채팅 중 페르소나를 pill로 즉시 전환 (자동 / 수동) |
-| 실행 파이프라인 | Intent → Task 분류 → Persona → Prompt 보강 → LLM/Tool → 파싱 의 단계별 처리 |
-| Thinking panel | 각 단계 소요시간·토큰 추정·Prompt 보강 전후 비교·세션 체인을 접이식 패널로 표시 |
+| 실행 파이프라인 | Intent → Task 분류 → Persona → LLM/Tool → 파싱 의 단계별 처리 |
+| Thinking panel | 각 단계 소요시간·tiktoken 토큰 계산·세션 체인을 접이식 패널로 표시 |
 | 세션 실행 히스토리 | 턴별 도구 사용 이력을 `SessionHistory`로 추적, 사이드바에 통계·체인 표시 |
 | Approval panel | LLM 코드 확인 후 [실행] / [수정] / [건너뛰기] 선택 |
 | 대화 연속성 | 이전 결과(`last_result`)를 다음 질문의 입력으로 자동 체이닝 |
@@ -103,9 +103,9 @@ excel-platform/
 │   │   ├── file_tools.py               # get_row_count / analyze_missing / get_profile
 │   │   └── tool_cache.py               # MD5 키 · mtime 무효화 · TTL 10분 캐시
 │   ├── prompts/                        # 프롬프트 빌더
-│   │   ├── builder.py                  # 동적 system prompt 조합 · user prompt 보강
-│   │   ├── code_rules.py               # 코드 생성 규칙
-│   │   └── examples.py                 # intent별 few-shot 예시
+│   │   ├── builder.py                  # 동적 system prompt 조합
+│   │   ├── code_rules.py               # 코드 생성 규칙 (패턴 선택 기준 포함)
+│   │   └── examples.py                 # intent별 few-shot 예시 (n파일 reduce 패턴)
 │   ├── chat_history.py                 # 대화 이력 저장
 │   ├── persona_manager.py              # 페르소나 CRUD + intent 매핑
 │   └── system_monitor.py               # GPU/CPU/RAM/디스크 + Ollama VRAM 조회·로드·언로드
@@ -122,6 +122,9 @@ excel-platform/
 │   ├── quality_report.py               # 품질 리포트 UI
 │   ├── persona_panel.py                # 페르소나 관리 UI
 │   └── components.py                   # 의도 배지 등 공통 UI
+├── docs/
+│   ├── task_classification.md          # 3단계 하이브리드 분류 설계 설명
+│   └── tool_execution_design.md        # Tool 실행 아키텍처 개선 설계 (Phase 1/2)
 ├── tests/
 │   └── test_used_range.py
 ├── uploads/                            # 업로드 파일 (gitignore)
@@ -225,13 +228,9 @@ flowchart TD
         MP["수동: pills 선택"]
     end
 
-    subgraph Step3["Step 3: Prompt 보강"]
-        AUG["augment_user_prompt()\n컬럼명·결측치·last_result 주입"]
-    end
-
     TOOL["Tool 직접 실행\ndispatch_tool()\nLLM 없이 즉시 처리"]
-    LLM["Step 4: LLM 호출\nstreaming"]
-    PARSE["Step 5: parse_llm_response()\n코드 블록 추출"]
+    LLM["Step 3: LLM 호출\nstreaming"]
+    PARSE["Step 4: parse_llm_response()\n코드 블록 추출"]
     APPR["Approval panel\n코드 실행 / 수정 / 건너뛰기"]
     Exec["code_executor.py\nAST 검증 → exec()"]
     Result["결과 렌더링\nDataFrame / 숫자 / 차트"]
@@ -240,11 +239,11 @@ flowchart TD
     History["record_pipeline_run()\nSessionHistory 기록"]
     Followup["후속 질문 3개 생성"]
 
-    Input --> PRE --> Step1 --> Step2 --> Step3
+    Input --> PRE --> Step1 --> Step2
 
-    Step3 -->|"mode=tool"| TOOL
-    Step3 -->|"mode=code"| LLM
-    Step3 -->|"mode=llm"| LLM
+    Step2 -->|"mode=tool"| TOOL
+    Step2 -->|"mode=code"| LLM
+    Step2 -->|"mode=llm"| LLM
 
     TOOL --> Result
     LLM --> PARSE --> APPR
@@ -270,7 +269,8 @@ confidence ≥ 0.80인 정형 요청은 LLM을 거치지 않고 도구로 직접
 | `get_row_count` | 행 수 조회 |
 | `analyze_missing` | 결측치 분석 |
 | `get_profile` | 컬럼 프로파일 |
-| `merge_files` | 다중 파일 병합 |
+| `merge_files` | 스키마 다른 파일 join/concat |
+| `merge_same_format` | 동일 양식 n개 파일 concat → groupby → 평균 통합 |
 | `export_data` | 결과 파일 저장 |
 
 ```mermaid
@@ -300,7 +300,7 @@ flowchart LR
 
 | 클래스 | 역할 |
 |--------|------|
-| `PipelineStage` | `INTENT / PERSONA / PROMPT_ENHANCE / LLM_THINKING / EXECUTING / COMPLETED / ERROR` |
+| `PipelineStage` | `INTENT / PERSONA / LLM_THINKING / EXECUTING / COMPLETED / ERROR` |
 | `StageMetrics` | 단계별 시작·종료 시각, 소요시간(ms), 부가 정보 |
 | `PipelineState` | 전체 파이프라인 입력·출력·메트릭 집계 |
 | `ToolExecution` | 단일 턴 실행 레코드 (mode, tool, 성공여부, 소요시간, 결과 행수, 체이닝 여부) |
@@ -310,9 +310,8 @@ flowchart LR
 stateDiagram-v2
     [*] --> INTENT
     INTENT --> PERSONA
-    PERSONA --> PROMPT_ENHANCE
-    PROMPT_ENHANCE --> LLM_THINKING : code / llm 모드
-    PROMPT_ENHANCE --> EXECUTING    : tool 모드
+    PERSONA --> LLM_THINKING : code / llm 모드
+    PERSONA --> EXECUTING    : tool 모드
     LLM_THINKING --> EXECUTING
     EXECUTING --> COMPLETED
     EXECUTING --> ERROR
@@ -350,7 +349,6 @@ flowchart LR
     State --> TP3
     TP3 -->|"Intent·Persona·Model 배지"| Badge["상단 요약"]
     TP3 -->|"단계별 progress bar"| Timing["타이밍 바"]
-    TP3 -->|"원본 vs 보강 비교"| Prompt["Prompt 비교"]
     TP3 -->|"세션 체인"| Chain["🔗 필터 → 집계"]
 
     State --> AP3
@@ -372,20 +370,6 @@ flowchart LR
 | analyze | 분석, 통계, 차트, 시각화 | 분석가 |
 | export | 저장, 다운로드, 내보내기 | 엔지니어 |
 | query | 컬럼, 몇개, 뭐야, 보여줘 | 분석가 |
-
-**사용자 프롬프트 자동 보강**
-
-```
-[입력]  "이거 합쳐줘"
-
-[LLM이 실제로 받는 것]
-이거 합쳐줘
-
----
-[자동 컨텍스트]
-주의 — 'b.xlsx' 결측치: 담당자(12개)
-직전 작업 결과(last_result): 500행 × 3열, 컬럼: 날짜, 항목, 금액
-```
 
 ### 7. 코드 실행 샌드박스
 
@@ -417,6 +401,9 @@ result = df[df["항목"] >= 100]         # DataFrame → st.dataframe()
 result = {"type": "number", "value": df["금액"].sum()}   # st.metric()
 result = {"type": "plot",   "value": fig}                # 인라인 차트
 save("결과.xlsx")                      # results/ 저장 + 다운로드 버튼
+
+# n개 파일 체이닝 병합 — reduce 주입됨 (import 불필요)
+result = reduce(lambda l, r: pd.merge(l, r, on=key_col, how="left"), dfs)
 ```
 
 ### 8. 차트 지원 (5종 + 추세선)
@@ -489,6 +476,7 @@ flowchart LR
 | UI | Streamlit 1.57 (`st.navigation`, `st.pills`, `st.dialog`) |
 | 데이터 | pandas, numpy, openpyxl, xlrd, matplotlib |
 | LLM | ollama, google-generativeai, openai |
+| 토큰 계산 | tiktoken (OpenAI 모델 정확 계산, 그 외 cl100k_base 근사) |
 | 시스템 모니터링 | psutil, nvidia-smi (subprocess) |
 | 실행 환경 | Python 3.12+ |
 
