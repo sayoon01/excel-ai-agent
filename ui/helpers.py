@@ -26,6 +26,9 @@ _DEFAULTS: dict = {
     "selected_sheets": {},        # fname → sheet_name
     "selected_files": [],         # 채팅에서 활성화된 파일 목록
     "selected_persona_key": None, # None = intent 자동 결정
+    "llm_temperature": 0.7,
+    "llm_max_tokens": 4096,
+    "compare_results": None,
 }
 
 
@@ -49,6 +52,9 @@ def get_llm_client(
         (client, None)      — 성공
         (None, 오류메시지)  — 실패
     """
+    temperature = st.session_state.get("llm_temperature", 0.7)
+    max_tokens  = st.session_state.get("llm_max_tokens", 4096)
+
     p = st.session_state.provider
     if p == "Ollama":
         use_code = force_code or intent in _CODE_INTENTS
@@ -56,7 +62,11 @@ def get_llm_client(
         model = (code_model if use_code and code_model else st.session_state.ollama_model)
         if not model:
             return None, "Ollama 모델을 선택해 주세요."
-        client = get_client("Ollama", model, ollama_host=st.session_state.ollama_host)
+        client = get_client(
+            "Ollama", model,
+            ollama_host=st.session_state.ollama_host,
+            temperature=temperature, max_tokens=max_tokens,
+        )
         if client is None:
             return None, "Ollama 연결에 실패했습니다. Ollama가 실행 중인지 확인하세요."
         return client, None
@@ -65,11 +75,11 @@ def get_llm_client(
         model = st.session_state.get("gemini_model", GEMINI_MODELS[0])
         if not key:
             return None, "Gemini API 키를 입력해 주세요."
-        return get_client("Gemini", model, api_key=key), None
+        return get_client("Gemini", model, api_key=key, temperature=temperature, max_tokens=max_tokens), None
     elif p == "OpenAI":
         key = st.session_state.openai_key.strip()
         model = st.session_state.get("openai_model", OPENAI_MODELS[0])
         if not key:
             return None, "OpenAI API 키를 입력해 주세요."
-        return get_client("OpenAI", model, api_key=key), None
+        return get_client("OpenAI", model, api_key=key, temperature=temperature, max_tokens=max_tokens), None
     return None, "지원하지 않는 프로바이더입니다."

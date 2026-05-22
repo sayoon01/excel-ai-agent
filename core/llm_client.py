@@ -16,16 +16,22 @@ class LLMClient(ABC):
 # ── Ollama ─────────────────────────────────────────────────────────────────────
 
 class OllamaClient(LLMClient):
-    def __init__(self, host: str = "http://localhost:11434"):
+    def __init__(self, host: str = "http://localhost:11434", model: str = ""):
         import ollama
         self._client = ollama.Client(host=host)
+        self._model = model
+        self.temperature: float = 0.7
+        self.num_predict: int = 4096
 
     def chat_stream(
         self, messages: list[dict], system_prompt: str
     ) -> Generator[str, None, None]:
         full_messages = [{"role": "system", "content": system_prompt}] + messages
         stream = self._client.chat(
-            model=self._model, messages=full_messages, stream=True
+            model=self._model,
+            messages=full_messages,
+            stream=True,
+            options={"temperature": self.temperature, "num_predict": self.num_predict},
         )
         for chunk in stream:
             token = chunk.message.content
@@ -55,13 +61,21 @@ class GeminiClient(LLMClient):
         genai.configure(api_key=api_key)
         self._genai = genai
         self._model_name = model
+        self.temperature: float = 0.7
+        self.max_output_tokens: int = 4096
 
     def chat_stream(
         self, messages: list[dict], system_prompt: str
     ) -> Generator[str, None, None]:
+        import google.generativeai as genai
+        config = genai.types.GenerationConfig(
+            temperature=self.temperature,
+            max_output_tokens=self.max_output_tokens,
+        )
         model = self._genai.GenerativeModel(
             model_name=self._model_name,
             system_instruction=system_prompt,
+            generation_config=config,
         )
         history = []
         for msg in messages[:-1]:
@@ -91,6 +105,8 @@ class OpenAIClient(LLMClient):
         from openai import OpenAI
         self._client = OpenAI(api_key=api_key)
         self._model = model
+        self.temperature: float = 0.7
+        self.max_tokens: int = 4096
 
     def chat_stream(
         self, messages: list[dict], system_prompt: str
@@ -100,6 +116,8 @@ class OpenAIClient(LLMClient):
             model=self._model,
             messages=full_messages,
             stream=True,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
         )
         for chunk in stream:
             delta = chunk.choices[0].delta.content
@@ -122,14 +140,25 @@ def get_client(
     model: str,
     api_key: str = "",
     ollama_host: str = "http://localhost:11434",
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
 ) -> LLMClient | None:
     try:
         if provider == "Ollama":
-            return OllamaClient(host=ollama_host).with_model(model)
+            c = OllamaClient(host=ollama_host, model=model)
+            c.temperature = temperature
+            c.num_predict = max_tokens
+            return c
         elif provider == "Gemini":
-            return GeminiClient(api_key=api_key, model=model)
+            c = GeminiClient(api_key=api_key, model=model)
+            c.temperature = temperature
+            c.max_output_tokens = max_tokens
+            return c
         elif provider == "OpenAI":
-            return OpenAIClient(api_key=api_key, model=model)
+            c = OpenAIClient(api_key=api_key, model=model)
+            c.temperature = temperature
+            c.max_tokens = max_tokens
+            return c
     except Exception:
         return None
     return None
