@@ -98,6 +98,26 @@ def _resolve_placeholders(text: str, files_info: list[dict]) -> str:
     return text.replace("{FILE_A}", file_a).replace("{FILE_B}", file_b)
 
 
+def _build_rag_example(user_query: str, intent: str, compact: bool, files_info: list[dict]) -> str | None:
+    """RAG store에서 유사 예시 검색. store 미준비 시 None 반환."""
+    try:
+        from core.rag.example_store import get_store
+        store = get_store()
+        if not store.is_ready():
+            return None
+        k = 1 if compact else 2
+        entries = store.retrieve(user_query, intent=intent, k=k)
+        if not entries:
+            return None
+        blocks = []
+        for ex in entries:
+            code = _resolve_placeholders(ex["template"], files_info)
+            blocks.append(f"## 참고 예시 — {ex['query']}\n```python\n{code}\n```")
+        return "\n\n".join(blocks)
+    except Exception:
+        return None
+
+
 def build_system_prompt(
     files_info: list[dict],
     intent: str = "query",
@@ -106,6 +126,7 @@ def build_system_prompt(
     recent_messages: list[dict] | None = None,
     persona_key: str | None = None,
     mode: str = "code",
+    user_query: str = "",
 ) -> str:
     _key = persona_key or resolve_persona_key(intent)
     p = get_persona(_key) or get_persona("analyst")
@@ -135,9 +156,16 @@ def build_system_prompt(
             "파일 데이터를 참고해 구체적인 수치나 컬럼명을 언급하면 좋습니다."
         )
     else:
-        example_mode = "compact" if compact else "full"
-        raw_example = EXAMPLES.get(intent, EXAMPLES["query"])[example_mode]
-        example = _resolve_placeholders(raw_example, files_info)
+        # RAG: 쿼리 유사도 기반 동적 검색 → 실패 시 정적 fallback
+        example = (
+            _build_rag_example(user_query, intent, compact, files_info)
+            if user_query
+            else None
+        )
+        if example is None:
+            example_mode = "compact" if compact else "full"
+            raw_example = EXAMPLES.get(intent, EXAMPLES["query"])[example_mode]
+            example = _resolve_placeholders(raw_example, files_info)
         parts.extend([example, CODE_RULES])
 
     return "\n\n".join(parts)

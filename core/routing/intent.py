@@ -18,26 +18,56 @@ _INTENT_MAP: dict[str, list[str]] = {
                   "컬럼", "행", "열", "크기", "형태", "뭐가"],
 }
 
+# merge 세부 분류 — 수직 concat vs 수평 join
+_MERGE_UNION_HINTS: list[str] = [
+    "세로로", "쌓아", "이어붙여", "concat",
+    "같은 형식", "같은 구조", "같은 양식", "동일 양식", "동일 형식", "동일 구조",
+    "1월", "2월", "3월", "4월", "5월", "6월",
+    "7월", "8월", "9월", "10월", "11월", "12월",
+    "상반기", "하반기", "1분기", "2분기", "3분기", "4분기",
+    "월별", "분기별", "연도별", "지역별", "부서별",
+]
+_MERGE_JOIN_HINTS: list[str] = [
+    "기준으로 합쳐", "키 기준", "키 컬럼으로", "키컬럼",
+    "조인", "join", "에 붙여줘", "에 연결", "에 매핑", "매핑",
+    "사번", "고객id", "고객번호", "상품코드", "거래처코드", "주문번호",
+]
+
 INTENT_LABEL: dict[str, str] = {
-    "filter":    "데이터 필터링",
-    "merge":     "파일/시트 병합",
-    "aggregate": "집계/그룹 연산",
-    "transform": "데이터 변환",
-    "analyze":   "탐색적 분석",
-    "export":    "파일 내보내기",
-    "query":     "데이터 조회/질문",
+    "filter":       "데이터 필터링",
+    "merge":        "파일/시트 병합",
+    "merge_union":  "수직 통합 (concat)",
+    "merge_join":   "수평 결합 (join)",
+    "aggregate":    "집계/그룹 연산",
+    "transform":    "데이터 변환",
+    "analyze":      "탐색적 분석",
+    "export":       "파일 내보내기",
+    "query":        "데이터 조회/질문",
 }
 
 # 내부 전용 — builder.py에서만 사용
 _INTENT_TO_PERSONA: dict[str, str] = {
-    "filter":    "engineer",
-    "aggregate": "engineer",
-    "transform": "engineer",
-    "export":    "engineer",
-    "merge":     "merger",
-    "analyze":   "analyst",
-    "query":     "analyst",
+    "filter":       "engineer",
+    "aggregate":    "engineer",
+    "transform":    "engineer",
+    "export":       "engineer",
+    "merge":        "merger",
+    "merge_union":  "merger",
+    "merge_join":   "merger",
+    "analyze":      "analyst",
+    "query":        "analyst",
 }
+
+
+def detect_merge_subtype(prompt: str) -> str:
+    """'merge' 의도를 수직(union) / 수평(join) / 모호(merge)로 세분화."""
+    union_score = sum(1 for h in _MERGE_UNION_HINTS if h in prompt)
+    join_score  = sum(1 for h in _MERGE_JOIN_HINTS  if h in prompt)
+    if union_score > join_score:
+        return "merge_union"
+    if join_score > union_score:
+        return "merge_join"
+    return "merge"
 
 
 def detect_intent(prompt: str) -> str:
@@ -48,5 +78,15 @@ def detect_intent(prompt: str) -> str:
         for kw in keywords:
             if kw in lower:
                 scores[intent] += 1
+
+    # merge 세부 힌트를 merge 점수에 반영 — "조인/사번" 등이 _INTENT_MAP에 없어도 감지
+    union_hits = sum(1 for h in _MERGE_UNION_HINTS if h in lower)
+    join_hits  = sum(1 for h in _MERGE_JOIN_HINTS  if h in lower)
+    scores["merge"] += union_hits + join_hits
+
     best = max(scores, key=lambda k: scores[k])
-    return best if scores[best] > 0 else "query"
+    if scores[best] == 0:
+        return "query"
+    if best == "merge":
+        return detect_merge_subtype(lower)
+    return best

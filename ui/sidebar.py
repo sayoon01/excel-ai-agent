@@ -6,7 +6,7 @@ import streamlit as st
 from services.export import to_markdown
 from services.file_manager import list_files, save_uploaded
 from core.llm.llm_client import GEMINI_MODELS, OPENAI_MODELS, list_ollama_models
-from core.chat_history import delete_chat, list_chats, load_chat, new_chat_id, save_chat
+from core.chat_history import delete_chat, list_chats, load_chat, new_chat_id, save_chat, search_history
 
 
 def render_sidebar() -> None:
@@ -143,3 +143,33 @@ def render_sidebar() -> None:
                             st.session_state.messages = []
                             st.session_state.current_chat_id = new_chat_id()
                         st.rerun()
+
+        # ── 분석 히스토리 검색 ────────────────────────────────────────────────
+        st.divider()
+        with st.expander("🔍 분석 히스토리 검색"):
+            _hist_q = st.text_input(
+                "히스토리 검색",
+                placeholder="합계, 필터, 병합...",
+                key="history_search_query",
+                label_visibility="collapsed",
+            )
+            if _hist_q and len(_hist_q.strip()) > 1:
+                _hist_results = search_history(_hist_q.strip())
+                if not _hist_results:
+                    st.caption("검색 결과 없음")
+                for _hi, _hr in enumerate(_hist_results):
+                    _date = _hr["date"]
+                    _date_fmt = f"{_date[4:6]}/{_date[6:8]}" if len(_date) >= 8 else ""
+                    st.markdown(
+                        f'<div style="font-size:11px;color:#888;margin-top:8px;">{_date_fmt}</div>'
+                        f'<div style="font-size:13px;">{_hr["query"][:30]}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    _hc1, _hc2 = st.columns([3, 2])
+                    with _hc1:
+                        with st.expander("코드"):
+                            st.code(_hr["code"][:400], language="python")
+                    with _hc2:
+                        if st.button("↩ 사용", key=f"hist_{_hi}", use_container_width=True):
+                            st.session_state.pending_prompt = _hr["query"]
+                            st.switch_page("pages/0_채팅.py")

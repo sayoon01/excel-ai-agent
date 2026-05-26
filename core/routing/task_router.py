@@ -162,16 +162,20 @@ def _rule_classify(prompt: str, intent: str) -> dict:
 
     # intent 기반 기본값
     _intent_defaults = {
-        "query":     ("llm",  0.60),
-        "analyze":   ("code", 0.65),
-        "filter":    ("tool", 0.70),
-        "aggregate": ("tool", 0.70),
-        "transform": ("code", 0.65),
-        "merge":     ("tool", 0.70),
-        "export":    ("tool", 0.75),
+        "query":        ("llm",  0.60),
+        "analyze":      ("code", 0.65),
+        "filter":       ("tool", 0.70),
+        "aggregate":    ("tool", 0.70),
+        "transform":    ("code", 0.65),
+        "merge":        ("tool", 0.70),
+        "merge_union":  ("tool", 0.80),  # 동일 구조 수직 통합 → merge_same_format
+        "merge_join":   ("code", 0.75),  # 키 기반 수평 결합 → LLM 코드 생성
+        "export":       ("tool", 0.75),
     }
     mode, conf = _intent_defaults.get(intent, ("code", 0.55))
-    return {"mode": mode, "tool": None, "confidence": conf, **options}
+    # merge_union은 merge_same_format 도구로 직접 라우팅
+    tool = "merge_same_format" if intent == "merge_union" else None
+    return {"mode": mode, "tool": tool, "confidence": conf, **options}
 
 
 def _llm_classify(prompt: str, intent: str, client=None) -> dict:

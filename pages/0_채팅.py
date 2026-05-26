@@ -13,7 +13,7 @@ from core.execution.code_executor import ExecutionResult
 from core.tools.dispatcher import dispatch_tool
 from ui.chat_layout import apply_chat_layout_styles, chat_input_spacer
 from ui.chat_view import render_chat_history, render_last_result_banner
-from ui.helpers import get_llm_client
+from ui.helpers import get_embedder, get_llm_client
 from ui.quality_report import load_files_info
 
 if not st.session_state.current_chat_id:
@@ -163,6 +163,7 @@ if prompt:
     # confidence < 0.8인 애매한 케이스를 LLM이 직접 분류하도록 client 전달
     _pre_client, _pre_err = get_llm_client(intent="query")
     _classify_client = None if _pre_err else _pre_client
+    _embedder = get_embedder()
     state = run_pre_generation(
         user_prompt=prompt,
         files_info=files_info,
@@ -171,6 +172,7 @@ if prompt:
         compact=is_compact,
         recent_messages=st.session_state.messages,
         llm_client=_classify_client,
+        embedder=_embedder,
     )
     st.session_state.last_intent = state.intent
 

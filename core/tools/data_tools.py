@@ -598,15 +598,23 @@ def merge_files(
     if df_left is None or df_right is None:
         return {"type": "error", "message": "파일을 읽을 수 없습니다."}
 
-    # 공통 컬럼으로 조인 시도
+    # 공통 컬럼 중 unique 비율이 가장 높은 컬럼을 키로 선택
     common = list(set(df_left.columns) & set(df_right.columns))
-    if common:
-        on_col = common[0]
-        result = pd.merge(df_left, df_right, on=on_col, how="left")
-        method = f"{on_col} 기준 left join"
-    else:
-        result = pd.concat([df_left, df_right], ignore_index=True)
-        method = "단순 이어붙이기 (concat)"
+    if not common:
+        return {
+            "type": "error",
+            "message": (
+                f"두 파일에 공통 컬럼이 없어 수평 결합(join)을 할 수 없습니다.\n"
+                f"  • {files_info[0]['name']} 컬럼: {list(df_left.columns[:5])}\n"
+                f"  • {files_info[1]['name']} 컬럼: {list(df_right.columns[:5])}\n"
+                "수직 통합(concat)이 필요하다면 '세로로 합쳐줘'처럼 요청하거나, "
+                "join 기준이 될 공통 키 컬럼을 알려 주세요."
+            ),
+        }
+
+    key_col = max(common, key=lambda c: df_left[c].nunique() / max(len(df_left), 1))
+    result = pd.merge(df_left, df_right, on=key_col, how="left")
+    method = f"{key_col} 기준 left join"
 
     return {
         "type": "dataframe",

@@ -48,13 +48,22 @@ result = pd.DataFrame(rows)
 - 파일명을 지정하려면 `result = df` 이후에 `save("파일명.xlsx")` 호출 (순서 중요: result 먼저, save 나중)
   → save()를 생략하면 타임스탬프 파일명(result_YYYYMMDD_HHMMSS.xlsx)으로 자동 저장됨
 
-### 파일 통합 패턴 선택 기준
+### ⚠️ [CRITICAL] 파일 통합 — 반드시 구조 분석 후 판단
 
-**같은 구조의 여러 파일을 하나로 합칠 때** (동일 양식 통합, 항목별 평균)
-→ `pd.concat` 으로 세로 결합 후 항목 기준 집계
-- key 컬럼: 비수치형 컬럼 전체를 자동 감지 (컬럼명을 코드에 직접 쓰지 않음)
-- 수치형 컬럼 → `groupby(key_cols).mean()`
-- 문자형 컬럼 → `.agg("first")`, 결과 컬럼 순서는 원본과 동일하게 유지
+**Step 1 — 컬럼 구조 먼저 대조**
+통합 전 모든 파일의 컬럼 목록을 비교하여 일치 비율을 계산하세요.
+```python
+dfs = list(files.values())
+col_sets = [set(df.columns) for df in dfs]
+common = col_sets[0].intersection(*col_sets[1:])
+overlap_ratio = len(common) / max(len(col_sets[0]), 1)
+print(f"공통 컬럼 {len(common)}개 / 비율 {overlap_ratio:.0%}")
+```
+
+**Step 2 — 구조가 같으면 수직 통합 (pd.concat)**
+조건: 공통 컬럼 비율 ≥ 80% **AND** 같은 기간/지역/부서로 분할된 데이터일 때만 사용.
+- 문자형 컬럼 전체를 key_cols로 자동 감지 → groupby 집계
+- 수치형: mean / 문자형: first / 원본 컬럼 순서 유지
 
 ```python
 dfs = [df.copy() for df in files.values()]
@@ -66,8 +75,31 @@ result   = combined.groupby(key_cols, as_index=False).agg(agg_dict)
 result   = result[[c for c in dfs[0].columns if c in result.columns]]
 ```
 
-**스키마가 다른 파일을 키 기준으로 연결할 때** (join, 좌우 결합)
-→ `pd.merge` 사용
+**Step 3 — 구조가 다르면 수평 결합 (pd.merge)**
+조건: 컬럼 구조가 다르거나, 서로 다른 도메인 데이터(매출 + 직원 정보 등)일 때.
+- 공통 고유 키(사번·고객ID·상품코드·날짜 등)를 반드시 먼저 찾아야 함
+- 키가 명확하지 않으면 임의로 합치지 말고 `print()`로 후보를 출력하고 중단
 
-**단일 파일에서 컬럼 평균·합계를 보여줄 때**
+```python
+# 공통 컬럼 중 unique값 비율이 가장 높은 컬럼을 키로 선택
+dfs = list(files.values())
+common_cols = list(set(dfs[0].columns) & set(dfs[1].columns))
+if not common_cols:
+    print("공통 컬럼 없음 — 키 컬럼을 명시해 주세요")
+    result = pd.DataFrame()
+else:
+    key_col = max(common_cols,
+                  key=lambda c: dfs[0][c].nunique() / max(len(dfs[0]), 1))
+    print(f"선택된 키: {key_col}  (후보: {common_cols})")
+    result = pd.merge(dfs[0], dfs[1], on=key_col, how="left")
+    print(f"병합 결과: {len(result)}행 × {len(result.columns)}열")
+save("merged.xlsx")
+```
+
+**⛔ 절대 금지 — concat 무단 사용**
+- 컬럼 구조가 다른 파일에 `pd.concat`을 쓰는 것은 **데이터 오염**입니다.
+- 키 컬럼을 모르는 상태에서 `pd.merge`를 임의로 실행하지 마세요.
+- 구조 파악 없이 바로 통합 코드를 작성하지 마세요.
+
+**단일 파일 집계**
 → `df.mean()` 또는 `df.groupby(...).agg(...)` 사용"""

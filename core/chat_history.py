@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -52,3 +53,58 @@ def delete_chat(chat_id: str) -> None:
     path = HISTORY_DIR / f"{chat_id}.json"
     if path.exists():
         path.unlink()
+
+
+def search_history(query: str, max_results: int = 5) -> list[dict]:
+    """키워드로 과거 성공 코드 쌍 검색.
+
+    Returns: [{query, code, date, chat_id}] — 최신순, 코드 블록 있는 응답만.
+    """
+    keywords = [w for w in query.strip().split() if len(w) > 1]
+    if not keywords:
+        return []
+
+    results: list[dict] = []
+    paths = sorted(HISTORY_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+
+    for path in paths:
+        try:
+            messages = json.loads(path.read_text(encoding="utf-8")).get("messages", [])
+        except Exception:
+            continue
+
+        for i, msg in enumerate(messages):
+            if msg["role"] != "user" or i + 1 >= len(messages):
+                continue
+
+            user_text = msg.get("display", msg.get("content", ""))
+            if not any(kw in user_text for kw in keywords):
+                continue
+
+            next_msg = messages[i + 1]
+            if next_msg["role"] != "assistant":
+                continue
+
+            code_match = re.search(r"```python\s*\n(.*?)```", next_msg.get("content", ""), re.DOTALL)
+            if not code_match:
+                continue
+
+            results.append({
+                "query": user_text[:80],
+                "code": code_match.group(1).strip(),
+                "date": path.stem,
+                "chat_id": path.stem,
+            })
+
+    # 쿼리 앞부분 기준 중복 제거
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for r in results:
+        key = r["query"][:20]
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+        if len(unique) >= max_results:
+            break
+
+    return unique

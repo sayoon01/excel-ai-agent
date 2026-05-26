@@ -4,7 +4,7 @@
 
 엑셀·CSV 파일을 업로드하고 AI와 대화하면서 데이터를 분석·변환·병합하는 Streamlit 기반 대화형 앱입니다.
 
-> 작성일: 2026-05-22 (최종 수정: 2026-05-22)
+> 작성일: 2026-05-22 (최종 수정: 2026-05-26)
 
 ---
 
@@ -16,6 +16,10 @@
 | 파일 관리 | xlsx / xls / csv 다중 업로드, 중복 처리, 멀티 시트 선택, 전체 미리보기 |
 | 3-mode 요청 처리 | `tool` (정형 작업 직접 실행) / `code` (LLM 코드 생성+실행) / `llm` (자연어 응답) 자동 분기 |
 | Tool 직접 실행 | 필터·집계·정렬·병합·차트 등 정형 요청을 LLM 없이 도구로 즉시 처리 |
+| RAG 기반 동적 few-shot 주입 | 사용자 질문을 벡터 유사도로 검색해 가장 관련 있는 코드 예시를 시스템 프롬프트에 자동 주입 |
+| 피드백 루프 | 성공한 코드 실행 결과를 자동으로 RAG 스토어에 추가 — 다음 유사 질문의 few-shot 예시로 활용 |
+| 분석 히스토리 검색 | 사이드바에서 과거 채팅의 분석 코드를 키워드로 검색, 원클릭으로 채팅에 재사용 |
+| merge 의도 세분화 | `merge_union` (구조 동일 → concat) / `merge_join` (키 기준 → merge) 자동 분기 |
 | 파일 선택 pills | 채팅 화면에서 분석할 파일을 pill 버튼으로 다중 선택 |
 | 페르소나 관리 | 분석가·엔지니어·병합 전문가 등 AI 역할을 화면에서 생성·편집·복제 |
 | 채팅 페르소나 선택 | 채팅 중 페르소나를 pill로 즉시 전환 (자동 / 수동) |
@@ -84,12 +88,16 @@ excel-platform/
 │   └── 2_설정.py                       # 4탭: 시스템 모니터링/페르소나 관리/모델 관리/비교 테스트
 ├── core/                               # 비즈니스 로직 (Streamlit 미사용)
 │   ├── routing/                        # Intent / Task 분류
-│   │   ├── intent.py                   # 의도 분류 (7종)
+│   │   ├── intent.py                   # 의도 분류 (9종 — merge_union/merge_join 세분화 포함)
 │   │   └── task_router.py              # tool/code/llm 3-mode 분류 + classify_task()
 │   ├── execution/                      # 코드 실행 / 파이프라인
 │   │   ├── code_executor.py            # AST 검증 + exec() 샌드박스 + execute_with_retry
 │   │   ├── pipeline.py                 # PipelineState · StageMetrics · SessionHistory · ToolExecution
 │   │   └── pipeline_executor.py        # run_pre_generation() · parse_llm_response() · record_pipeline_run()
+│   ├── rag/                            # RAG 기반 동적 few-shot 주입
+│   │   ├── __init__.py
+│   │   ├── embedder.py                 # OpenAIEmbedder / GeminiEmbedder / KeywordEmbedder(한국어 bigram TF-IDF)
+│   │   └── example_store.py            # 코사인 유사도 검색 · 커스텀 예시 관리 · 임베딩 캐시
 │   ├── data/                           # 엑셀 처리 / 품질 규칙
 │   │   ├── excel_processor.py          # 멀티헤더 감지·평탄화 · 사용 범위 탐지
 │   │   └── quality_rules.py            # 데이터 품질 프로파일링 규칙
@@ -98,15 +106,15 @@ excel-platform/
 │   │   └── model_comparator.py         # 페르소나 비교 테스트 실행
 │   ├── tools/                          # Tool 직접 실행 레이어
 │   │   ├── dispatcher.py               # dispatch_tool() — 도구 레지스트리 + 캐시 연동
-│   │   ├── data_tools.py               # aggregate / filter / sort / filter_then_sort
+│   │   ├── data_tools.py               # aggregate / filter / sort / merge_files / merge_same_format
 │   │   ├── chart_tools.py              # bar / line / pie / scatter / histogram / boxplot
 │   │   ├── file_tools.py               # get_row_count / analyze_missing / get_profile
 │   │   └── tool_cache.py               # MD5 키 · mtime 무효화 · TTL 10분 캐시
 │   ├── prompts/                        # 프롬프트 빌더
-│   │   ├── builder.py                  # 동적 system prompt 조합
-│   │   ├── code_rules.py               # 코드 생성 규칙 (패턴 선택 기준 포함)
-│   │   └── examples.py                 # intent별 few-shot 예시 (n파일 reduce 패턴)
-│   ├── chat_history.py                 # 대화 이력 저장
+│   │   ├── builder.py                  # 동적 system prompt 조합 + RAG 예시 주입
+│   │   ├── code_rules.py               # 코드 생성 규칙 — 파일 통합 3단계 CRITICAL 판단 규칙 포함
+│   │   └── examples.py                 # EXAMPLE_CORPUS(18개 RAG 검색 대상) + 정적 fallback EXAMPLES
+│   ├── chat_history.py                 # 대화 이력 저장 · search_history() 키워드 검색
 │   ├── persona_manager.py              # 페르소나 CRUD + intent 매핑
 │   └── system_monitor.py               # GPU/CPU/RAM/디스크 + Ollama VRAM 조회·로드·언로드
 ├── services/
@@ -114,14 +122,17 @@ excel-platform/
 │   ├── comment_cache.py                # LLM 품질 코멘트 영구 캐시
 │   └── export.py                       # 대화 내보내기 (.md)
 ├── ui/
-│   ├── helpers.py                      # 세션 상태 초기화 · LLM 클라이언트 팩토리
-│   ├── sidebar.py                      # 사이드바 렌더링 + 세션 통계
-│   ├── chat_view.py                    # 채팅 렌더링 · 코드 실행 · 승인 패널 연동
+│   ├── helpers.py                      # 세션 상태 초기화 · LLM 클라이언트 팩토리 · get_embedder()
+│   ├── sidebar.py                      # 사이드바 렌더링 + 세션 통계 + 분석 히스토리 검색
+│   ├── chat_view.py                    # 채팅 렌더링 · 코드 실행 · 승인 패널 연동 · RAG 피드백 루프
 │   ├── thinking_panel.py               # Thinking process 접이식 패널 + 세션 체인
 │   ├── approval_panel.py               # [실행][수정][건너뛰기] 승인 UI
 │   ├── quality_report.py               # 품질 리포트 UI
 │   ├── persona_panel.py                # 페르소나 관리 UI
 │   └── components.py                   # 의도 배지 등 공통 UI
+├── .rag/                               # RAG 캐시 (gitignore)
+│   ├── embedding_cache.json            # 임베딩 벡터 캐시 (임베더별 무효화)
+│   └── custom_examples.json            # 사용자 성공 코드 누적 저장
 ├── docs/
 │   ├── task_classification.md          # 3단계 하이브리드 분류 설계 설명
 │   └── tool_execution_design.md        # Tool 실행 아키텍처 개선 설계 (Phase 1/2)
@@ -144,24 +155,28 @@ graph TD
     end
 
     subgraph UI["ui/"]
-        CHV["chat_view.py\n채팅 렌더링"]
+        CHV["chat_view.py\n채팅 렌더링 + RAG 피드백"]
         TP["thinking_panel.py\nThinking + 세션 체인"]
         AP["approval_panel.py\n승인 패널"]
         QR["quality_report.py\n품질 리포트"]
         PP["persona_panel.py\n페르소나 관리"]
-        HLP["helpers.py\n세션·클라이언트"]
-        SB["sidebar.py\n세션 통계"]
+        HLP["helpers.py\n세션·클라이언트·임베더"]
+        SB["sidebar.py\n세션 통계·히스토리 검색"]
     end
 
     subgraph Core["core/"]
         subgraph Routing["routing/"]
-            IT["intent.py\n의도 분류"]
+            IT["intent.py\n의도 분류 (9종)"]
             TR["task_router.py\ntool/code/llm 분류"]
         end
         subgraph Execution["execution/"]
             PE["pipeline_executor.py"]
             PS["pipeline.py\nPipelineState\nSessionHistory"]
             CE["code_executor.py\n샌드박스 실행"]
+        end
+        subgraph RAG["rag/"]
+            EM["embedder.py\nOpenAI/Gemini/Keyword"]
+            ES["example_store.py\n코사인 유사도 검색"]
         end
         subgraph DataPkg["data/"]
             EP["excel_processor.py"]
@@ -179,7 +194,8 @@ graph TD
         end
         PM["persona_manager.py"]
         SM["system_monitor.py"]
-        BD["prompts/builder.py"]
+        BD["prompts/builder.py\nRAG 주입"]
+        CH["chat_history.py\n히스토리 검색"]
     end
 
     subgraph Services["services/"]
@@ -191,15 +207,17 @@ graph TD
     P0 --> CHV & HLP & SB
     P1 --> QR
     P2 --> PP & SM & MC
-    CHV --> AP & TP & CE & HLP
+    CHV --> AP & TP & CE & HLP & ES
     TP --> PS
     AP --> PS
     PE --> PS & IT & TR & PM & BD
     PS --> SB
+    SB --> CH
     QR --> CC & FM
     PP --> PM
     MC --> LC
-    BD --> PM & IT
+    BD --> PM & IT & ES
+    ES --> EM
     FM --> EP & QU
     DP --> DT & CT & TC
     P0 --> DP
@@ -219,7 +237,7 @@ flowchart TD
     PRE["pipeline_executor.py\nrun_pre_generation()"]
 
     subgraph Step1["Step 1: Intent + Task 분류"]
-        IT["detect_intent() — 7종"]
+        IT["detect_intent() — 9종\n(merge_union / merge_join 세분화)"]
         TR2["classify_task()\ntool / code / llm"]
     end
 
@@ -237,6 +255,7 @@ flowchart TD
     AutoSave["results/ 자동 저장"]
     Retry["실패 시 LLM 자동 수정\n파일 스키마 포함 프롬프트"]
     History["record_pipeline_run()\nSessionHistory 기록"]
+    RAGStore["RAG Store 저장\n성공 코드 → custom_examples.json"]
     Followup["후속 질문 3개 생성"]
 
     Input --> PRE --> Step1 --> Step2
@@ -251,11 +270,61 @@ flowchart TD
     APPR -->|수정 후 실행| Exec
     APPR -->|건너뛰기| Followup
     Exec -->|성공| Result --> AutoSave
+    Exec -->|성공| RAGStore
     Exec -->|실패| Retry --> Exec
     Result --> History --> Followup
 ```
 
-### 2. Tool 직접 실행 레이어 (`core/tools/`)
+### 2. RAG 기반 동적 Few-Shot 주입 (`core/rag/`)
+
+사용자 질문을 벡터로 임베딩해 가장 유사한 코드 예시를 시스템 프롬프트에 자동으로 주입합니다.
+
+```mermaid
+flowchart LR
+    Q["사용자 질문"]
+    EM2["embedder.py\n텍스트 → 벡터"]
+    ES2["example_store.py\n코사인 유사도 검색\n+ intent bonus"]
+    BD2["builder.py\nRAG 예시 → 시스템 프롬프트"]
+    FB["성공 코드 실행 후\nstore.add()"]
+    CACHE[".rag/embedding_cache.json\n임베더 변경 시 자동 재빌드"]
+    CUSTOM[".rag/custom_examples.json\n사용자 성공 코드 누적"]
+
+    Q --> EM2 --> ES2 --> BD2
+    FB --> CUSTOM --> ES2
+    ES2 --> CACHE
+```
+
+**임베더 3종:**
+| 임베더 | 사용 조건 | 특징 |
+|--------|----------|------|
+| `OpenAIEmbedder` | OpenAI API 키 설정 시 | `text-embedding-3-small`, 배치 API |
+| `GeminiEmbedder` | Gemini API 키 설정 시 | `models/text-embedding-004` |
+| `KeywordEmbedder` | API 키 없을 때 자동 폴백 | 한국어 문자 bigram TF-IDF, numpy only |
+
+**검색 우선순위:** 코사인 유사도 + 같은 intent이면 +0.1 보너스 → 상위 k개 반환  
+**폴백 체인:** RAG 검색 실패 → 정적 `EXAMPLES` dict → 절대 중단 없음
+
+### 3. merge 의도 세분화
+
+`detect_intent()`가 merge 키워드 감지 시 자동으로 서브타입을 판단합니다.
+
+```mermaid
+flowchart TD
+    MG["merge 키워드 감지"]
+    SUB["detect_merge_subtype()"]
+    U["merge_union\n→ merge_same_format 도구\n(pd.concat + groupby 평균)"]
+    J["merge_join\n→ code 모드\n(LLM이 키 컬럼 분석 후 pd.merge)"]
+    M["merge (모호)\n→ merge_files 도구\n(공통 키로 left join)"]
+
+    MG --> SUB
+    SUB -->|"'세로로', '1월~12월',\n'같은 구조' 등"| U
+    SUB -->|"'조인', '사번',\n'키 기준' 등"| J
+    SUB -->|힌트 없음| M
+```
+
+**merge_files 폴백 개선:** 공통 키 컬럼이 없을 경우 과거의 `pd.concat` 무단 실행 → 현재는 명확한 오류 메시지 반환 + 수직 통합 요청 안내.
+
+### 4. Tool 직접 실행 레이어 (`core/tools/`)
 
 confidence ≥ 0.80인 정형 요청은 LLM을 거치지 않고 도구로 직접 처리합니다.
 
@@ -269,34 +338,16 @@ confidence ≥ 0.80인 정형 요청은 LLM을 거치지 않고 도구로 직접
 | `get_row_count` | 행 수 조회 |
 | `analyze_missing` | 결측치 분석 |
 | `get_profile` | 컬럼 프로파일 |
-| `merge_files` | 스키마 다른 파일 join/concat |
+| `merge_files` | 키 기반 수평 결합 (공통 키 없으면 오류 반환) |
 | `merge_same_format` | 동일 양식 n개 파일 concat → groupby → 평균 통합 |
 | `export_data` | 결과 파일 저장 |
-
-```mermaid
-flowchart LR
-    TR3["task_router.py\nclassify_task()"]
-    DP2["dispatcher.py\ndispatch_tool()"]
-    TC2["tool_cache.py\nMD5 키 · mtime 무효화"]
-    DT2["data_tools.py\naggregate / filter / sort"]
-    CT2["chart_tools.py\nbar / scatter / histogram / boxplot …"]
-    FT["file_tools.py\nrow_count / missing / profile"]
-
-    TR3 -->|"tool + confidence"| DP2
-    DP2 -->|캐시 히트| TC2
-    DP2 -->|캐시 미스| DT2 & CT2 & FT
-    DT2 & CT2 & FT --> TC2
-```
 
 **컬럼 추론 3단계** (`_infer_col()`):
 1. 문자열 완전 일치
 2. 편집 거리 기반 유사 매핑
 3. LLM 시맨틱 추론 (confidence 낮을 때)
 
-**대화 연속성** (`use_last_result`):  
-"방금 결과에서", "이전 결과로" 등 키워드 감지 시 이전 DataFrame을 다음 도구 입력으로 자동 전달.
-
-### 3. 파이프라인 상태 관리 (`core/execution/pipeline.py`)
+### 5. 파이프라인 상태 관리 (`core/execution/pipeline.py`)
 
 | 클래스 | 역할 |
 |--------|------|
@@ -319,52 +370,14 @@ stateDiagram-v2
     COMPLETED --> [*]
 ```
 
-### 4. 세션 실행 히스토리
-
-매 턴 완료 후 `record_pipeline_run()`이 `ToolExecution` 레코드를 생성하고 `SessionHistory`에 누적합니다.
-
-**사이드바 표시:**
-```
-📊 세션 통계
-필터       3회
-집계       2회
-코드실행   1회
-체인: 필터 → 집계 → 코드실행
-성공률: 100%
-```
-
-**Thinking Panel 하단:**
-```
-🔗 세션 체인: 필터 → 집계 → 코드실행
-```
-
-### 5. Thinking panel / Approval panel
-
-```mermaid
-flowchart LR
-    State["PipelineState"]
-    TP3["thinking_panel.py"]
-    AP3["approval_panel.py"]
-
-    State --> TP3
-    TP3 -->|"Intent·Persona·Model 배지"| Badge["상단 요약"]
-    TP3 -->|"단계별 progress bar"| Timing["타이밍 바"]
-    TP3 -->|"세션 체인"| Chain["🔗 필터 → 집계"]
-
-    State --> AP3
-    AP3 -->|"▶ 코드 실행"| Execute["즉시 실행"]
-    AP3 -->|"✏️ 수정"| Edit["인라인 에디터"]
-    AP3 -->|"건너뛰기"| Skip["실행 없이"]
-```
-
-### 6. 동적 프롬프트 구성
-
-**의도 감지 — 7종 분류**
+### 6. 의도 분류 — 9종
 
 | 의도 | 감지 키워드 예시 | 연결 페르소나 |
 |------|----------------|-------------|
 | filter | 필터, 뽑아, 추출, 이상, 이하 | 엔지니어 |
 | merge | 병합, 합쳐, 통합, join | 병합 전문가 |
+| merge_union | 세로로, 쌓아, 같은 구조, 1~12월, 분기별 | 병합 전문가 |
+| merge_join | 조인, 사번, 고객id, 키 기준, 매핑 | 병합 전문가 |
 | aggregate | 합계, 평균, 그룹, 집계 | 엔지니어 |
 | transform | 변환, 추가, 정렬, 계산 | 엔지니어 |
 | analyze | 분석, 통계, 차트, 시각화 | 분석가 |
@@ -476,6 +489,7 @@ flowchart LR
 | UI | Streamlit 1.57 (`st.navigation`, `st.pills`, `st.dialog`) |
 | 데이터 | pandas, numpy, openpyxl, xlrd, matplotlib |
 | LLM | ollama, google-generativeai, openai |
+| 임베딩 | openai (`text-embedding-3-small`), google-generativeai (`text-embedding-004`), numpy TF-IDF (폴백) |
 | 토큰 계산 | tiktoken (OpenAI 모델 정확 계산, 그 외 cl100k_base 근사) |
 | 시스템 모니터링 | psutil, nvidia-smi (subprocess) |
 | 실행 환경 | Python 3.12+ |

@@ -39,6 +39,23 @@ def _run_code(code: str, msg_idx: int) -> None:
             selected_files=st.session_state.get("selected_files") or None,
         )
     st.session_state.exec_results[msg_idx] = result
+
+    # 성공 케이스를 RAG store에 추가 — 다음 유사 질문의 few-shot 예시로 활용
+    if result.success and original_question and code:
+        try:
+            from core.rag.example_store import get_store
+            from ui.helpers import get_embedder
+            from ui.quality_report import load_files_info
+
+            _state = st.session_state.pipeline_states.get(msg_idx)
+            _intent = _state.intent if _state else "query"
+            _selected = st.session_state.get("selected_files") or []
+            if _selected:
+                _fi = load_files_info(tuple(_selected))
+                get_store().add(original_question, _intent, code, _fi)
+        except Exception:
+            pass
+
     if result.success and result.result_df is not None:
         st.session_state.last_result = result.result_df
         st.session_state.result_history.append(result.result_df)

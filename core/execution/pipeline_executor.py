@@ -50,6 +50,7 @@ def run_pre_generation(
     compact: bool = False,
     recent_messages: list | None = None,
     llm_client=None,
+    embedder=None,
 ) -> PipelineState:
     """LLM 호출 전 Step 1~3 실행. 기존 함수를 그대로 호출하면서 메트릭만 수집."""
     state = PipelineState(user_prompt=user_prompt)
@@ -76,6 +77,14 @@ def run_pre_generation(
     m2.details = {"key": state.persona_key, "name": state.persona_name}
     m2.finish()
 
+    # RAG store 초기화 — embedder가 있으면 lazy build
+    if embedder is not None:
+        try:
+            from core.rag.example_store import get_store
+            get_store().ensure_built(embedder)
+        except Exception:
+            pass
+
     # System prompt 빌드 (메트릭 포함)
     state.system_prompt = build_system_prompt(
         files_info,
@@ -85,6 +94,7 @@ def run_pre_generation(
         recent_messages=recent_messages,
         persona_key=state.persona_key,
         mode=state.mode,
+        user_query=user_prompt,
     )
     state.system_prompt_token_est = estimate_tokens(state.system_prompt, state.model_name)
 

@@ -87,3 +87,19 @@ def get_llm_client(
             return None, "OpenAI API 키를 입력해 주세요."
         return get_client("OpenAI", model, api_key=key, temperature=temperature, max_tokens=max_tokens), None
     return None, "지원하지 않는 프로바이더입니다."
+
+
+def get_embedder():
+    """현재 세션 설정 기반 Embedder 반환. API key 없으면 KeywordEmbedder fallback."""
+    from core.rag.embedder import GeminiEmbedder, KeywordEmbedder, OpenAIEmbedder
+
+    p = st.session_state.provider
+    if p == "OpenAI":
+        key = st.session_state.get("openai_key", "").strip()
+        if key:
+            return OpenAIEmbedder(api_key=key)
+    elif p == "Gemini":
+        key = st.session_state.get("gemini_key", "").strip()
+        if key:
+            return GeminiEmbedder(api_key=key)
+    return KeywordEmbedder()
