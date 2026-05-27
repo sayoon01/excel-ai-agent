@@ -57,9 +57,9 @@ def _summarize_files(files_info: list[dict]) -> str:
             f" | 컬럼: {', '.join(col_parts)}{null_note}"
         )
         if f.get("head_sample"):
-            first = f["head_sample"][0]
-            pairs = [f"{k}={repr(v)}" for k, v in list(first.items())[:5]]
-            lines.append(f"    샘플(1행): {', '.join(pairs)}")
+            for i, row in enumerate(f["head_sample"][:3]):
+                pairs = [f"{k}={repr(v)}" for k, v in list(row.items())[:8]]
+                lines.append(f"    샘플({i+1}행): {', '.join(pairs)}")
         if f.get("numeric_stats"):
             parts = []
             for col, s in list(f["numeric_stats"].items())[:6]:
@@ -156,6 +156,18 @@ def build_system_prompt(
             "파일 데이터를 참고해 구체적인 수치나 컬럼명을 언급하면 좋습니다."
         )
     else:
+        # 코드 모드: 실제 컬럼명 명시적 참조 목록 주입
+        col_ref_lines = []
+        for f in files_info:
+            cols = ", ".join(f'"{c}"' for c in f["col_names"])
+            col_ref_lines.append(f"  {f['name']}: [{cols}]")
+        if col_ref_lines:
+            parts.append(
+                "## 코드에서 사용 가능한 실제 컬럼명\n"
+                + "\n".join(col_ref_lines)
+                + "\n위 컬럼명 외의 이름은 파일에 존재하지 않습니다."
+            )
+
         # RAG: 쿼리 유사도 기반 동적 검색 → 실패 시 정적 fallback
         example = (
             _build_rag_example(user_query, intent, compact, files_info)

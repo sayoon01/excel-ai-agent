@@ -18,7 +18,7 @@ EXAMPLE_CORPUS: list[dict] = [
         "tags": ["숫자조건", "이상", "이하", "임계값"],
         "template": """\
 df = files["{FILE_A}"]
-result = df[df["컬럼명"] >= 기준값]
+result = df[df["컬럼명"] >= 0]  # 0 → 사용자가 요청한 실제 기준값으로 교체
 print(f"전체 {len(df)}행 중 {len(result)}행 추출됨")""",
         "source": "builtin",
     },
@@ -109,8 +109,6 @@ result = df""",
         "query": "파일들 키 기준으로 합쳐줘",
         "tags": ["join", "merge", "키컬럼", "left join"],
         "template": """\
-from functools import reduce
-
 dfs = list(files.values())
 
 key_candidates = set(dfs[0].select_dtypes(exclude="number").columns)
@@ -120,8 +118,7 @@ key_col = list(key_candidates)[0] if key_candidates else None
 print(f"키 컬럼: {key_col}")
 
 result = reduce(lambda left, right: pd.merge(left, right, on=key_col, how="left"), dfs)
-print(f"병합 결과: {len(result)}행 × {len(result.columns)}열")
-save("merged.xlsx")""",
+print(f"병합 결과: {len(result)}행 × {len(result.columns)}열")""",
         "source": "builtin",
     },
     {
@@ -131,8 +128,7 @@ save("merged.xlsx")""",
         "tags": ["concat", "세로합치기", "동일구조", "행추가"],
         "template": """\
 result = pd.concat(list(files.values()), ignore_index=True)
-print(f"총 {len(result)}행으로 합쳐짐")
-save("combined.xlsx")""",
+print(f"총 {len(result)}행으로 합쳐짐")""",
         "source": "builtin",
     },
 
@@ -188,9 +184,13 @@ result = pd.DataFrame(rows)""",
         "tags": ["막대차트", "bar", "시각화", "chart"],
         "template": """\
 df = files["{FILE_A}"]
+cat_cols = df.select_dtypes(exclude="number").columns.tolist()
+num_cols = df.select_dtypes(include="number").columns.tolist()
+cat_col = cat_cols[0] if cat_cols else df.columns[0]
+num_col = num_cols[0] if num_cols else df.columns[-1]
 fig, ax = plt.subplots(figsize=(10, 5))
-df.groupby("기준컬럼")["숫자컬럼"].sum().plot(kind="bar", ax=ax, color="steelblue")
-ax.set_title("기준컬럼별 숫자컬럼 합계")
+df.groupby(cat_col)[num_col].sum().plot(kind="bar", ax=ax, color="steelblue")
+ax.set_title(f"{cat_col}별 {num_col} 합계")
 ax.set_xlabel("")
 plt.xticks(rotation=45, ha="right")
 plt.tight_layout()
@@ -204,9 +204,11 @@ result = {"type": "plot", "value": fig}""",
         "tags": ["선그래프", "line", "추세", "시계열"],
         "template": """\
 df = files["{FILE_A}"]
+num_cols = df.select_dtypes(include="number").columns.tolist()
+num_col = num_cols[0] if num_cols else df.columns[-1]
 fig, ax = plt.subplots(figsize=(10, 4))
-df.plot(x="날짜컬럼", y="숫자컬럼", ax=ax, marker="o")
-ax.set_title("시계열 추세")
+df[num_col].plot(ax=ax, marker="o")
+ax.set_title(f"{num_col} 추세")
 plt.tight_layout()
 result = {"type": "plot", "value": fig}""",
         "source": "builtin",
@@ -254,7 +256,7 @@ save("output.xlsx")""",
         "tags": ["저장", "csv", "필터후저장"],
         "template": """\
 df = files["{FILE_A}"]
-result = df[df["컬럼"] >= 값]
+result = df[df["컬럼"] >= 0]  # 0 → 사용자가 요청한 실제 기준값으로 교체
 save("filtered.csv")""",
         "source": "builtin",
     },
@@ -285,7 +287,7 @@ EXAMPLES: dict[str, dict[str, str]] = {
 어시스턴트: 해당 컬럼 기준으로 조건에 맞는 행만 추출합니다.
 ```python
 df = files["{FILE_A}"]
-result = df[df["컬럼명"] >= 기준값]
+result = df[df["컬럼명"] >= 0]  # 0 → 사용자가 요청한 실제 기준값으로 교체
 print(f"전체 {len(df)}행 중 {len(result)}행 추출됨")
 ```
 
@@ -298,7 +300,7 @@ result = files["{FILE_A}"][files["{FILE_A}"]["컬럼명"] == "값"]
 ## 필터링 코드 패턴
 ```python
 df = files["{FILE_A}"]
-result = df[df["컬럼"] >= 값]          # 숫자 조건
+result = df[df["컬럼"] >= 0]           # 숫자 조건 (0 → 실제 기준값으로 교체)
 result = df[df["컬럼"] == "값"]        # 문자 조건
 result = df[df["컬럼"].isin(["A","B"])] # 복수 조건
 ```""",
@@ -383,8 +385,6 @@ result = df
 어시스턴트: 공통 키 컬럼을 기준으로 n개 파일을 순서대로 left join합니다.
   파일이 2개든 5개든 같은 패턴을 씁니다.
 ```python
-from functools import reduce
-
 dfs = list(files.values())
 
 # 공통 키 후보: 첫 파일과 나머지 모두에 있는 문자형 컬럼
@@ -396,7 +396,6 @@ print(f"키 컬럼: {key_col}")
 
 result = reduce(lambda left, right: pd.merge(left, right, on=key_col, how="left"), dfs)
 print(f"병합 결과: {len(result)}행 × {len(result.columns)}열")
-save("merged.xlsx")
 ```
 
 사용자: "같은 구조 파일 여러 개 세로로 붙여줘" (n개 concat)
@@ -404,13 +403,10 @@ save("merged.xlsx")
 ```python
 result = pd.concat(list(files.values()), ignore_index=True)
 print(f"총 {len(result)}행으로 합쳐짐")
-save("combined.xlsx")
 ```""",
         "compact": """\
 ## 병합 코드 패턴 (패턴 하나만 선택해서 사용할 것)
 ```python
-from functools import reduce
-
 # 패턴 A: n파일 key join (2개든 5개든 동일)
 dfs = list(files.values())
 key_candidates = set(dfs[0].select_dtypes(exclude="number").columns)
@@ -418,11 +414,9 @@ for df in dfs[1:]:
     key_candidates &= set(df.select_dtypes(exclude="number").columns)
 key_col = list(key_candidates)[0]   # 추론된 키 컬럼
 result = reduce(lambda l, r: pd.merge(l, r, on=key_col, how="left"), dfs)
-save("merged.xlsx")
 
 # 패턴 B: n파일 세로 병합 (같은 구조)
 result = pd.concat(list(files.values()), ignore_index=True)
-save("combined.xlsx")
 ```""",
     },
 
@@ -431,11 +425,7 @@ save("combined.xlsx")
 ## 참고 예시 — 탐색적 분석
 
 사용자: "이 데이터 분석해줘"
-어시스턴트: 결측치 현황과 수치형 컬럼을 실제 수치로 확인합니다.
-
-결측치: 비목분류(22개), 비용명(18개), Unnamed:2(35개)
-수치형 컬럼: 계획예산, 실행예산, 전년도집행
-추천: Unnamed 열 제거 권장 / 결측 문자열 컬럼은 ffill 우선 검토
+어시스턴트: 결측치 현황과 수치형 컬럼을 코드로 확인한 뒤 실제 수치를 언급합니다.
 
 ```python
 df = files["{FILE_A}"]
@@ -476,9 +466,13 @@ result = pd.DataFrame(rows)
 어시스턴트: plt로 차트를 생성하고 fig를 plot 타입으로 반환합니다.
 ```python
 df = files["{FILE_A}"]
+cat_cols = df.select_dtypes(exclude="number").columns.tolist()
+num_cols = df.select_dtypes(include="number").columns.tolist()
+cat_col = cat_cols[0] if cat_cols else df.columns[0]
+num_col = num_cols[0] if num_cols else df.columns[-1]
 fig, ax = plt.subplots(figsize=(10, 5))
-df.groupby("기준컬럼")["숫자컬럼"].sum().plot(kind="bar", ax=ax, color="steelblue")
-ax.set_title("기준컬럼별 숫자컬럼 합계")
+df.groupby(cat_col)[num_col].sum().plot(kind="bar", ax=ax, color="steelblue")
+ax.set_title(f"{cat_col}별 {num_col} 합계")
 ax.set_xlabel("")
 plt.xticks(rotation=45, ha="right")
 plt.tight_layout()
@@ -489,9 +483,11 @@ result = {"type": "plot", "value": fig}
 어시스턴트:
 ```python
 df = files["{FILE_A}"]
+num_cols = df.select_dtypes(include="number").columns.tolist()
+num_col = num_cols[0] if num_cols else df.columns[-1]
 fig, ax = plt.subplots(figsize=(10, 4))
-df.plot(x="날짜컬럼", y="숫자컬럼", ax=ax, marker="o")
-ax.set_title("시계열 추세")
+df[num_col].plot(ax=ax, marker="o")
+ax.set_title(f"{num_col} 추세")
 plt.tight_layout()
 result = {"type": "plot", "value": fig}
 ```
@@ -534,8 +530,12 @@ num_cols = df.select_dtypes(include="number").columns.tolist()
 result = pd.DataFrame({"항목": ["행수","열수","결측컬럼수","수치형컬럼수"],
                         "값": [len(df), len(df.columns), len(missing), len(num_cols)]})
 # 차트
+cat_cols = df.select_dtypes(exclude="number").columns.tolist()
+num_cols = df.select_dtypes(include="number").columns.tolist()
+cat_col = cat_cols[0] if cat_cols else df.columns[0]
+num_col = num_cols[0] if num_cols else df.columns[-1]
 fig, ax = plt.subplots(figsize=(10, 5))
-df.groupby("기준컬럼")["숫자컬럼"].sum().plot(kind="bar", ax=ax)
+df.groupby(cat_col)[num_col].sum().plot(kind="bar", ax=ax)
 plt.tight_layout()
 result = {"type": "plot", "value": fig}
 ```""",
@@ -556,7 +556,7 @@ save("output.xlsx")
 어시스턴트: 조건 필터 후 CSV로 저장합니다.
 ```python
 df = files["{FILE_A}"]
-result = df[df["컬럼"] >= 값]
+result = df[df["컬럼"] >= 0]  # 0 → 사용자가 요청한 실제 기준값으로 교체
 save("filtered.csv")
 ```""",
         "compact": """\

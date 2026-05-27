@@ -350,10 +350,19 @@ def execute_with_retry(
     current_code = code
     attempts = 0
     for _ in range(max_attempts - 1):
+        # KeyError면 잘못 사용한 컬럼명을 에러 메시지에서 추출해 명시
+        _keyerror_hint = ""
+        _ke_match = re.search(r"KeyError:\s*['\"]?([^'\"\n]+)['\"]?", result.error)
+        if _ke_match:
+            _keyerror_hint = (
+                f"\n[참고] 존재하지 않는 컬럼 '{_ke_match.group(1).strip()}'을 사용했습니다. "
+                f"아래 실제 컬럼명 목록에서 올바른 이름을 찾아 수정하세요.\n"
+            )
+
         correction_msg = (
             f"원래 질문: {original_question}\n\n"
             f"실행한 코드:\n```python\n{current_code}\n```\n\n"
-            f"오류 메시지:\n{result.error}\n\n"
+            f"오류 메시지:\n{result.error}{_keyerror_hint}\n\n"
             f"사용 가능한 파일과 실제 컬럼명:\n{_schema}\n\n"
             f"위 컬럼명을 참고해 오류를 수정한 코드를 제공해주세요."
         )

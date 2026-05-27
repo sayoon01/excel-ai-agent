@@ -612,7 +612,9 @@ def merge_files(
             ),
         }
 
-    key_col = max(common, key=lambda c: df_left[c].nunique() / max(len(df_left), 1))
+    non_numeric = [c for c in common if not pd.api.types.is_numeric_dtype(df_left[c])]
+    candidates = non_numeric if non_numeric else common
+    key_col = max(candidates, key=lambda c: df_left[c].nunique() / max(len(df_left), 1))
     result = pd.merge(df_left, df_right, on=key_col, how="left")
     method = f"{key_col} 기준 left join"
 

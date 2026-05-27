@@ -115,6 +115,13 @@ def _rule_classify(prompt: str, intent: str) -> dict:
     """1차 rule 기반 분류."""
     options = _detect_options(prompt)
 
+    # ── intent 선행 라우팅 — 키워드 루프보다 먼저 처리 ────────────────────────
+    # intent.py가 이미 merge 세부 분류를 완료한 경우, 키워드 룰이 덮어쓰지 못하게 막음
+    if intent == "merge_union":
+        return {"mode": "tool", "tool": "merge_same_format", "confidence": 0.88, **options}
+    if intent == "merge_join":
+        return {"mode": "code", "tool": None, "confidence": 0.80, **options}
+
     # ── 복합 조건 체크 (단일 키워드 루프보다 반드시 먼저 실행) ──────────────────
 
     # 차트 키워드 + 컬럼 키워드가 동시에 있으면 chart 우선 (get_profile 충돌 방지)

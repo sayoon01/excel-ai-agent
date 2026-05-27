@@ -76,24 +76,24 @@ result   = result[[c for c in dfs[0].columns if c in result.columns]]
 ```
 
 **Step 3 — 구조가 다르면 수평 결합 (pd.merge)**
-조건: 컬럼 구조가 다르거나, 서로 다른 도메인 데이터(매출 + 직원 정보 등)일 때.
-- 공통 고유 키(사번·고객ID·상품코드·날짜 등)를 반드시 먼저 찾아야 함
+조건: 컬럼 구조가 다르거나, 서로 다른 성격의 데이터일 때.
+- 두 테이블을 연결할 수 있는 고유 식별자 컬럼(ID류·코드류·날짜류)을 반드시 찾아야 함
 - 키가 명확하지 않으면 임의로 합치지 말고 `print()`로 후보를 출력하고 중단
 
 ```python
-# 공통 컬럼 중 unique값 비율이 가장 높은 컬럼을 키로 선택
+# 공통 컬럼 중 수치형을 제외하고, unique값 비율이 가장 높은 컬럼을 키로 선택
 dfs = list(files.values())
 common_cols = list(set(dfs[0].columns) & set(dfs[1].columns))
 if not common_cols:
     print("공통 컬럼 없음 — 키 컬럼을 명시해 주세요")
     result = pd.DataFrame()
 else:
-    key_col = max(common_cols,
-                  key=lambda c: dfs[0][c].nunique() / max(len(dfs[0]), 1))
-    print(f"선택된 키: {key_col}  (후보: {common_cols})")
+    non_numeric = [c for c in common_cols if not pd.api.types.is_numeric_dtype(dfs[0][c])]
+    candidates = non_numeric if non_numeric else common_cols
+    key_col = max(candidates, key=lambda c: dfs[0][c].nunique() / max(len(dfs[0]), 1))
+    print(f"선택된 키: {key_col}  (후보: {candidates})")
     result = pd.merge(dfs[0], dfs[1], on=key_col, how="left")
     print(f"병합 결과: {len(result)}행 × {len(result.columns)}열")
-save("merged.xlsx")
 ```
 
 **⛔ 절대 금지 — concat 무단 사용**
