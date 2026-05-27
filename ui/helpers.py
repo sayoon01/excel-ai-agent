@@ -12,7 +12,7 @@ _DEFAULTS: dict = {
     "messages": [],
     "exec_results": {},
     "provider": "Ollama",
-    "ollama_model": None,
+    "ollama_model": "gemma3:27b",
     "ollama_code_model": "",   # "" → 대화 모델과 동일
     "gemini_key": "",
     "openai_key": "",

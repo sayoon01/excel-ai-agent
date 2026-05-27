@@ -697,6 +697,18 @@ def merge_same_format(
     # 3. 세로 concat (공통 컬럼만)
     combined = pd.concat([df[common_cols] for df in dfs], ignore_index=True)
 
+    # 3-1. 소계/합계 행 분리 — 집계 행은 groupby 대상에서 제외
+    _SUBTOTAL_PATTERNS = {"소 계", "소계", "합 계", "합계", "계", "총계", "총 계", "내부흡수액"}
+    _first_text_col = next(
+        (c for c in common_cols if not pd.api.types.is_numeric_dtype(combined[c])), None
+    )
+    if _first_text_col:
+        _is_subtotal = combined[_first_text_col].astype(str).str.strip().isin(_SUBTOTAL_PATTERNS)
+        subtotal_rows = combined[_is_subtotal].copy()
+        combined = combined[~_is_subtotal].reset_index(drop=True)
+    else:
+        subtotal_rows = pd.DataFrame()
+
     # 4. 기준 키 컬럼 추론
     key_cols = _infer_key_cols(dfs[0], prompt, common_cols)
     if not key_cols:
@@ -724,7 +736,6 @@ def merge_same_format(
     measure_cols = [c for c in numeric_cols if agg_dict[c] == "mean"]
 
     if agg_dict:
-        # dropna=False: NaN 키 행(소계·합계 등 구조 행)도 그룹으로 보존
         result = combined.groupby(key_cols, as_index=False, dropna=False).agg(agg_dict)
     else:
         result = combined.drop_duplicates(subset=key_cols).reset_index(drop=True)
@@ -738,6 +749,12 @@ def merge_same_format(
         non_null = result[col].dropna()
         if len(non_null) and (non_null % 1 == 0).all():
             result[col] = result[col].astype("Int64")
+
+    # 8. 소계 행 중 첫 번째 파일 기준만 결과 하단에 참고용으로 추가 (중복 제거)
+    if not subtotal_rows.empty:
+        sub_dedup = subtotal_rows.drop_duplicates(subset=key_cols, keep="first")
+        sub_dedup = sub_dedup[[c for c in orig_order if c in sub_dedup.columns]]
+        result = pd.concat([result, sub_dedup], ignore_index=True)
 
     file_names = " + ".join(f["name"] for f in files_info[:3])
     if len(files_info) > 3:
