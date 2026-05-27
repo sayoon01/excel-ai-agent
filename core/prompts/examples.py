@@ -12,6 +12,45 @@ EXAMPLE_CORPUS: list[dict] = [
 
     # ── filter ────────────────────────────────────────────────────────────────
     {
+        "id": "filter_aggregate_multifile",
+        "intent": "filter",
+        "query": "각 파일에서 상위 N행 뽑아서 합계 내줘",
+        "tags": ["다중파일", "상위N행", "필터후집계", "nlargest"],
+        "template": """\
+rows = []
+for name, df in files.items():
+    num_cols = df.select_dtypes(include="number").columns.tolist()
+    if not num_cols:
+        continue
+    sort_col = num_cols[0]
+    top_n = df.nlargest(7, sort_col)  # 7 → 요청한 실제 N으로 교체
+    row = {"파일명": name}
+    for col in num_cols:
+        row[col] = top_n[col].sum()
+    rows.append(row)
+result = pd.DataFrame(rows)""",
+        "source": "builtin",
+    },
+    {
+        "id": "filter_head_sum_multifile",
+        "intent": "filter",
+        "query": "7행 뽑아서 합계내줘",
+        "tags": ["다중파일", "앞N행", "합계", "iloc"],
+        "template": """\
+rows = []
+for name, df in files.items():
+    num_cols = df.select_dtypes(include="number").columns.tolist()
+    if not num_cols:
+        continue
+    top_n = df.iloc[:7]  # 7 → 요청한 실제 N으로 교체
+    row = {"파일명": name}
+    for col in num_cols:
+        row[col] = top_n[col].sum()
+    rows.append(row)
+result = pd.DataFrame(rows)""",
+        "source": "builtin",
+    },
+    {
         "id": "filter_numeric",
         "intent": "filter",
         "query": "특정 값 이상인 행만 뽑아줘",
@@ -282,6 +321,23 @@ EXAMPLES: dict[str, dict[str, str]] = {
     "filter": {
         "full": """\
 ## 참고 예시 — 데이터 필터링
+
+사용자: "각 파일 상위 N행 합계 내줘" (파일 여러 개 + 필터 후 집계)
+어시스턴트: 파일마다 상위 N행을 추출한 뒤 수치 컬럼을 합산합니다.
+```python
+rows = []
+for name, df in files.items():
+    num_cols = df.select_dtypes(include="number").columns.tolist()
+    if not num_cols:
+        continue
+    sort_col = num_cols[0]
+    top_n = df.nlargest(7, sort_col)  # 7 → 요청한 실제 N으로 교체
+    row = {"파일명": name}
+    for col in num_cols:
+        row[col] = top_n[col].sum()
+    rows.append(row)
+result = pd.DataFrame(rows)
+```
 
 사용자: "특정 값 이상인 행만 뽑아줘"
 어시스턴트: 해당 컬럼 기준으로 조건에 맞는 행만 추출합니다.

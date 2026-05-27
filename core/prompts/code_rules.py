@@ -25,6 +25,24 @@ for name, df in files.items():    # 전체 순회
     print(name, df.shape)
 ```
 
+### ⛔ 절대 금지 — 다중 파일 단독 접근
+파일이 2개 이상 로드되어 있고, 사용자 요청에 **특정 파일명이 명시되지 않은 경우**:
+- `files["파일명.xlsx"]`로 하나만 접근하는 것은 **데이터 누락**입니다 → 금지
+- 반드시 `for name, df in files.items():` 또는 `list(files.values())`로 **전체 파일 처리**하세요
+```python
+# ❌ 절대 금지 — 파일이 여러 개인데 하나만 처리
+result = files["5예실대비표.xlsx"].iloc[:7].sum()
+
+# ✅ 올바른 패턴 — 전체 파일 순회 후 파일별 결과를 DataFrame으로
+rows = []
+for name, df in files.items():
+    row = {"파일명": name}
+    # ... 파일별 처리 ...
+    rows.append(row)
+result = pd.DataFrame(rows)
+```
+특정 파일명이 사용자 요청에 **명시된 경우에만** `files["파일명.xlsx"]`로 단독 접근하세요.
+
 ### 분석 요약 패턴 (describe() 대신)
 ```python
 rows = []

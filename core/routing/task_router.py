@@ -146,6 +146,20 @@ def _rule_classify(prompt: str, intent: str) -> dict:
     if any(k in prompt for k in _FILTER_KW) and any(k in prompt for k in _SORT_KW):
         return {"mode": "tool", "tool": "filter_then_sort", "confidence": 0.90, **options}
 
+    # "N행 뽑아서 합계" → head_aggregate tool (LLM 불필요, 전 파일 처리)
+    import re as _re
+    if (_re.search(r"\d+\s*행", prompt)
+            and any(k in prompt for k in {"뽑아", "추출"})
+            and any(k in prompt for k in {"합계", "총합", "sum"})):
+        return {"mode": "tool", "tool": "head_aggregate", "confidence": 0.95, **options}
+
+    # 필터 + 집계 복합 요청 → code 모드 (LLM이 순서대로 처리)
+    # "뽑아서 합계", "추출 후 평균" 같은 2단계 요청은 단일 tool로 처리 불가
+    _AGG_KW2 = {"합계", "평균", "최대", "최소", "집계", "sum", "mean", "max", "min", "총합"}
+    _FILTER_KW2 = {"뽑아", "추출", "필터", "조건"}
+    if any(k in prompt for k in _AGG_KW2) and any(k in prompt for k in _FILTER_KW2):
+        return {"mode": "code", "tool": None, "confidence": 0.82, **options}
+
     # tool 모드 먼저 검사 — tool 키워드가 있으면 llm/query 키워드보다 우선
     best_tool, best_conf = None, 0.0
     for keywords, tool_name, conf in _TOOL_RULES:

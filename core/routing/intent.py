@@ -79,10 +79,12 @@ def detect_intent(prompt: str) -> str:
             if kw in lower:
                 scores[intent] += 1
 
-    # merge 세부 힌트를 merge 점수에 반영 — "조인/사번" 등이 _INTENT_MAP에 없어도 감지
+    # merge 세부 힌트 — merge 키워드가 없을 때만 최소 1점 부여 (이중 누적 방지)
+    # "조인/사번" 등 _INTENT_MAP에 없는 표현도 감지하되, 이미 merge 점수가 있으면 추가 가산 안 함
     union_hits = sum(1 for h in _MERGE_UNION_HINTS if h in lower)
     join_hits  = sum(1 for h in _MERGE_JOIN_HINTS  if h in lower)
-    scores["merge"] += union_hits + join_hits
+    if scores["merge"] == 0 and (union_hits + join_hits) > 0:
+        scores["merge"] = 1
 
     best = max(scores, key=lambda k: scores[k])
     if scores[best] == 0:

@@ -2,8 +2,8 @@
 
 작성일: 2026-05-22  
 최종 수정: 2026-05-27  
-대상: main 브랜치 (약 5,400줄)  
-이번 리뷰 추가 범위: merge 라우팅 버그 수정, examples.py 플레이스홀더 정비, 소계 행 분리, 프롬프트 품질 개선
+대상: main 브랜치 (약 5,500줄)  
+이번 리뷰 추가 범위: merge 라우팅 버그 수정, examples.py 플레이스홀더 정비, 소계 행 분리, 프롬프트 품질 개선, 복합 의도 처리, 다중 파일 접근 원칙, auto_compact, ffill 소계 오염 복원, head_aggregate 도구 신규, Series 결과 처리, 다중 파일 경고 동적 주입
 
 ---
 
@@ -37,18 +37,19 @@ graph TD
             ES["example_store.py\n코사인 유사도 검색 + 캐시"]
         end
         PL["pipeline.py\nPipelineState / SessionHistory"]
-        PE["pipeline_executor.py ✏수정\nembedder 파라미터 추가"]
+        PE["pipeline_executor.py ✏수정\nembedder 파라미터 추가 + auto_compact\ndetect_ambiguity 제거"]
         SM["system_monitor.py\nGPU·VRAM·CPU·RAM·디스크"]
         MC["model_comparator.py\nrun_comparison()"]
         LC["llm_client.py"]
         CE["code_executor.py\nAST 샌드박스 + 자동 수정"]
-        BD["prompts/builder.py ✏수정\nRAG 예시 주입 추가"]
-        EX2["prompts/examples.py ✏수정\nEXAMPLE_CORPUS 18개 추가"]
-        CR["prompts/code_rules.py ✏강화\n파일 통합 CRITICAL 규칙"]
+        BD["prompts/builder.py ✏수정\nRAG 예시 주입 + 다중 파일 동적 경고"]
+        EX2["prompts/examples.py ✏수정\nEXAMPLE_CORPUS 20개 + filter_head_sum_multifile"]
+        CR["prompts/code_rules.py ✏강화\n파일 통합 CRITICAL + 다중 파일 ⛔ 절대 금지"]
         PM["persona_manager.py"]
         IT["routing/intent.py ✏수정\nmerge_union/merge_join 세분화"]
-        TR["routing/task_router.py ✏수정\n신규 intent 라우팅"]
-        DT["tools/data_tools.py ✏수정\nmerge_files 폴백 버그 수정"]
+        TR["routing/task_router.py ✏수정\n신규 intent 라우팅 + head_aggregate 감지"]
+        DT["tools/data_tools.py ✏수정\nmerge_files 버그 수정 + head_aggregate 신규"]
+        EP["data/excel_processor.py ✏수정\nffill 소계 행 오염 복원"]
         CH["chat_history.py ✏수정\nsearch_history() 추가"]
         QU["quality_rules.py"]
     end
@@ -163,6 +164,18 @@ sequenceDiagram
 
 **잘 설계된 점:** 서브타입 힌트가 `_INTENT_MAP`과 독립된 집합으로 관리되어 `_INTENT_MAP` 수정 없이 세분화 규칙만 별도로 튜닝할 수 있다.
 
+**이번 수정 — 이중 누적 방지:**
+merge 키워드 점수가 이미 있는 상태에서 union/join 힌트 점수까지 누적되어 "1월 합계" 같은 집계 요청이 merge로 오분류되는 버그가 수정됐다.
+
+```python
+# 수정 전: merge 키워드 있어도 힌트 점수 추가 누적
+scores["merge"] += union_hits + join_hits
+
+# 수정 후: merge 점수가 0일 때만 최소 1점 부여 (이중 누적 방지)
+if scores["merge"] == 0 and (union_hits + join_hits) > 0:
+    scores["merge"] = 1
+```
+
 **개선 여지:** `_MERGE_UNION_HINTS`의 월 키워드("1월"~"12월")가 집계 요청("3월 매출 평균 구해줘")에서도 감지될 수 있다. 집계 점수가 더 높을 때는 aggregate가 이기므로 실제 충돌은 드물지만, 월 키워드를 단독 감지보다 다른 힌트와 AND 조건으로 사용하는 방식을 고려해 볼 수 있다.
 
 ---
@@ -191,6 +204,31 @@ def _rule_classify(prompt: str, intent: str) -> dict:
 ```
 
 **효과:** `intent.py`의 서브타입 감지 결과가 이제 실제로 라우팅에 반영된다.
+
+**이번 수정 — 복합 의도 처리 (FILTER + AGG):**
+"뽑아서 합계 내줘" 같이 필터와 집계가 결합된 요청에서 filter 키워드가 먼저 잡혀 `filter_rows` 단일 도구로 라우팅되던 문제가 수정됐다. `_rule_classify()` 내 키워드 루프 이전에 복합 조건 체크를 추가했다.
+
+```python
+_AGG_KW2 = {"합계", "평균", "최대", "최소", "집계", "sum", "mean", "max", "min", "총합"}
+_FILTER_KW2 = {"뽑아", "추출", "필터", "조건"}
+if any(k in prompt for k in _AGG_KW2) and any(k in prompt for k in _FILTER_KW2):
+    return {"mode": "code", "tool": None, "confidence": 0.82, **options}
+```
+
+**효과:** 2단계 요청(필터 → 집계)이 LLM code 모드로 전달되어 순서대로 처리된다.
+
+**이번 수정 — `head_aggregate` 전용 도구 라우팅:**
+"N행 뽑아서 합계내줘" 패턴은 LLM code 모드에서 Gemma 같은 소형 모델이 단일 파일만 접근하거나 `pd.Series`를 반환하는 코드를 생성하는 문제가 반복됐다. LLM 없이 확정 처리하는 `head_aggregate` 도구를 신규 추가하고 우선순위 0.95로 라우팅한다.
+
+```python
+import re as _re
+if (_re.search(r"\d+\s*행", prompt)
+        and any(k in prompt for k in {"뽑아", "추출"})
+        and any(k in prompt for k in {"합계", "총합", "sum"})):
+    return {"mode": "tool", "tool": "head_aggregate", "confidence": 0.95, **options}
+```
+
+**효과:** Gemma가 아무 코드를 생성하든 무관하게 모든 파일을 처리한 올바른 DataFrame이 반환된다.
 
 ---
 
@@ -221,30 +259,53 @@ if not common:
 **merge_same_format() 수정 — 소계 행 버그:**
 예실대비표처럼 행 중간에 `소 계`, `합계` 같은 소계 행이 포함된 파일을 3개 통합할 때, 모든 소계 행의 key가 `(소 계, NaN, NaN)`으로 동일해 groupby에서 하나로 합쳐지는 버그가 있었다.
 
-수정: groupby 전에 소계 행을 분리하고, 집계 후 맨 뒤에 중복 제거 후 재부착.
+추가 개선: 소계 탐지를 첫 번째 텍스트 컬럼에서 **모든 텍스트 컬럼** 대상으로 확장하고, `apply(axis=1)` 대신 벡터화 연산으로 교체했다. 소계 행은 완전 제거(재부착 없음)한다.
 
 ```python
-_SUBTOTAL_PATTERNS = {"소 계", "소계", "합 계", "합계", "계", "총계", "총 계", "내부흡수액"}
-_first_text_col = next(
-    (c for c in common_cols if not pd.api.types.is_numeric_dtype(combined[c])), None
-)
-if _first_text_col:
-    _is_subtotal = combined[_first_text_col].astype(str).str.strip().isin(_SUBTOTAL_PATTERNS)
-    subtotal_rows = combined[_is_subtotal].copy()
+_SUBTOTAL_PATTERNS = {"소 계", "소계", "합 계", "합계", "계", "총계", "총 계",
+                      "내부흡수액", "소  계", "합  계"}
+_text_cols_for_filter = [
+    c for c in common_cols if not pd.api.types.is_numeric_dtype(combined[c])
+]
+if _text_cols_for_filter:
+    _is_subtotal = combined[_text_cols_for_filter].apply(
+        lambda col: col.astype(str).str.strip().isin(_SUBTOTAL_PATTERNS)
+    ).any(axis=1)
     combined = combined[~_is_subtotal].reset_index(drop=True)
 ```
 
-**효과:** 각 예산 항목(인건비, 재료비 등)의 소계가 독립적으로 보존되어 올바른 결과가 생성된다.
+**효과:** 소계 행이 어느 텍스트 컬럼에 있어도 감지된다. 결과 DataFrame은 실제 데이터 항목만 포함한다.
+
+**이번 수정 — `head_aggregate` 도구 신규 추가:**
+"N행 뽑아서 합계내줘" 패턴을 LLM 없이 처리하는 전용 도구다. 모든 로드된 파일을 순회하며 처음 N행의 수치 컬럼 합계를 파일별로 계산해 DataFrame을 반환한다.
+
+```python
+def head_aggregate(files_info, prompt="", **kwargs):
+    m = re.search(r"(\d+)\s*행", prompt)
+    n = int(m.group(1)) if m else 5
+    rows = []
+    for entry in files_info:
+        df = read_file(entry.get("name", ""), sheet_name=entry.get("sheet"))
+        top_n = df.iloc[:n]
+        num_cols = [c for c in top_n.columns if pd.api.types.is_numeric_dtype(top_n[c])]
+        row = {"파일명": entry.get("name", "")}
+        for col in num_cols:
+            row[col] = top_n[col].sum()
+        rows.append(row)
+    return {"type": "dataframe", "value": pd.DataFrame(rows), ...}
+```
+
+**설계 원칙:** LLM이 아닌 확정 코드로 처리 → 모델 종류·프롬프트 품질과 무관하게 항상 전체 파일을 올바르게 처리한다.
 
 ---
 
 ### `core/prompts/examples.py` ✅ 버그 수정 + 확장 — 양호
 
-기존 `EXAMPLES` dict(정적 fallback) 위에 `EXAMPLE_CORPUS`(18개 RAG 검색 대상)가 추가됐다.
+기존 `EXAMPLES` dict(정적 fallback) 위에 `EXAMPLE_CORPUS`(19개 RAG 검색 대상)가 추가됐다.
 
 | intent | 예시 수 |
 |--------|---------|
-| filter | 3 (numeric / string / isin) |
+| filter | 4 (multifile+aggregate / numeric / string / isin) |
 | aggregate | 3 (groupby sum / agg / pivot) |
 | transform | 2 (fillna+astype / new column) |
 | merge_join | 1 (n파일 reduce merge) |
@@ -278,6 +339,9 @@ ax.set_title(f"{cat_col}별 {num_col} 합계")
 
 `merge_join_key`, `merge_concat_vertical`의 intent가 `"merge"` → `"merge_join"` / `"merge_union"`으로 수정되어 RAG 검색 시 intent bonus가 정확히 적용된다.
 
+**이번 수정 — 다중 파일 복합 예시 추가:**
+"각 파일 상위 N행 합계" 요청 예시(`filter_aggregate_multifile`, `nlargest` 패턴)와 "N행 뽑아서 합계" 요청 예시(`filter_head_sum_multifile`, `iloc[:N]` 패턴) 두 가지가 추가됐다. `filter_head_sum_multifile`의 query는 "7행 뽑아서 합계내줘"로, 실제 발생한 요청 문자열과 최대한 일치시켜 RAG 유사도 점수를 높였다. CORPUS 20개, 정적 EXAMPLES dict 양쪽에 반영됐다.
+
 ---
 
 ### `core/prompts/code_rules.py` ✅ 강화 — 양호
@@ -301,9 +365,39 @@ candidates = non_numeric if non_numeric else common_cols
 key_col = max(candidates, key=lambda c: dfs[0][c].nunique() / max(len(dfs[0]), 1))
 ```
 
+**이번 수정 — 다중 파일 단독 접근 ⛔ 절대 금지로 격상:**
+기존 "안내" 형식의 원칙에서 기존 `⛔ 절대 금지` 스타일의 금지 규칙으로 격상됐다. 실제 발생한 잘못된 코드(`files["5예실대비표.xlsx"].iloc[:7].sum()`)를 금지 예시로 직접 포함해 LLM이 패턴을 즉시 인식하도록 했다.
+
+```python
+# ❌ 절대 금지 — 파일이 여러 개인데 하나만 처리
+result = files["5예실대비표.xlsx"].iloc[:7].sum()
+
+# ✅ 올바른 패턴 — 전체 파일 순회 후 파일별 결과를 DataFrame으로
+rows = []
+for name, df in files.items():
+    row = {"파일명": name}
+    # ... 파일별 처리 ...
+    rows.append(row)
+result = pd.DataFrame(rows)
+```
+
+**한계:** Gemma 27B 등 소형 로컬 모델은 system prompt 지시를 무시하는 경향이 있어, 이 규칙만으로는 완전 차단이 불가능하다. 근본 해결은 `head_aggregate` 같은 확정 도구로 LLM 코드 생성 자체를 우회하는 것이다.
+
 ---
 
 ### `core/execution/code_executor.py` ✅ 수정 — 개선
+
+**이번 수정 — `pd.Series` 결과 자동 변환:**
+`result = df.sum()`, `result = df.iloc[:5].sum()` 같이 Series를 반환하는 코드 실행 후 "저장할 표(result)가 없습니다" 오류가 발생하던 문제가 수정됐다. Series를 "항목 | 값" 2열 DataFrame으로 자동 변환한다.
+
+```python
+elif isinstance(result_raw, pd.Series):
+    result_type = "dataframe"
+    result_df = result_raw.reset_index()
+    result_df.columns = ["항목", "값"]
+```
+
+**배경:** 기존 result 타입 체크는 `pd.DataFrame`, `int/float`, `str`만 처리했다. `pd.Series`는 처리 루트가 없어 `result_type = ""`로 남아 오류 메시지가 출력됐다.
 
 `execute_with_retry()`의 자동 수정 프롬프트에 KeyError 특화 힌트가 추가됐다.
 
@@ -320,6 +414,28 @@ if _ke_match:
 수정 프롬프트에 이미 실제 파일 컬럼 스키마(`_build_file_schema`)가 포함돼 있어 LLM이 올바른 컬럼명을 찾아 수정하는 데 유리하다.
 
 **잘 설계된 점:** 타임아웃·보안 위반 오류는 재시도해도 해결이 불가능하므로 `_no_retry_signals` 체크로 즉시 반환한다. 불필요한 LLM 호출을 차단한다.
+
+---
+
+### `core/data/excel_processor.py` ✅ 수정 — 버그 수정
+
+**이번 수정 — ffill 소계 행 오염 복원:**
+예실대비표처럼 병합 셀로 구성된 엑셀 파일에서 소계 행의 앵커 컬럼(첫 번째 텍스트 컬럼)이 NaN으로 읽히는 구조적 문제가 있다. `read_excel_smart()`의 ffill 단계에서 이 NaN이 부모 그룹명("연구활동비" 등)으로 채워지면, 소계 행의 앵커 컬럼이 "소 계"가 아닌 부모 그룹명으로 오염된다.
+
+기존 `merge_same_format()`의 다중 컬럼 소계 탐지가 이를 잡아내지만, 소스 레벨에서도 복원하도록 수정했다.
+
+```python
+# ffill 이후 — 병합셀 NaN이었다가 ffill로 부모 그룹명이 채워진 행 중
+# 보조 컬럼에 소계 패턴이 있으면 앵커 컬럼을 소계 패턴 값으로 복원
+_SUBTOTAL_PAT = {"소 계", "소계", "합 계", "합계", "계", "총계", "총 계",
+                 "소  계", "합  계", "내부흡수액"}
+if len(text_cols) > 1:
+    for col in text_cols[1:]:
+        _hits = df[col].astype(str).str.strip().isin(_SUBTOTAL_PAT)
+        df.loc[_hits & is_continuation, anchor] = df.loc[_hits & is_continuation, col]
+```
+
+`is_continuation` 마스크(병합셀로 NaN이었던 행)와 AND 조건을 사용해, 원래 앵커값이 있는 행은 건드리지 않는다.
 
 ---
 
@@ -385,6 +501,19 @@ if result.success and original_question and code:
 
 **개선됨:** 이전 리뷰에서 지적한 `augment_user_prompt` 단계(Prompt 보강)가 제거됐다. 시퀀스가 Intent → Persona → System Prompt 빌드로 단순화됐다.
 
+**이번 수정 — auto_compact:**
+파일 수나 대화 길이에 관계없이 항상 full 시스템 프롬프트(~5,000토큰)가 나가던 구조에 자동 compact 전환 로직이 추가됐다.
+
+```python
+auto_compact = (
+    compact                          # 외부 강제 지정
+    or len(files_info) >= 5          # 파일 5개 이상
+    or len(recent_messages or []) >= 10  # 대화 10메시지(5턴) 이상
+)
+```
+
+파일 3개 이상 기준은 주요 사용 사례(예실대비표 3개 통합)에서 compact 전환이 일어나는 부작용을 막기 위해 5개로 설정했다.
+
 ---
 
 ### `core/prompts/builder.py` ✅ 수정 — 개선
@@ -399,6 +528,7 @@ RAG 예시 주입 함수(`_build_rag_example`, `_resolve_placeholders`)가 추�
 **이번 수정:**
 - head_sample 크기를 1행/5컬럼 → 3행/8컬럼으로 확대. 병합 키 후보를 LLM이 실제 데이터 값을 보고 판단할 수 있다.
 - code 모드 프롬프트에 실제 컬럼명 참조 섹션 추가. 플레이스홀더 컬럼명 사용을 차단한다.
+- 다중 파일 시 파일명을 나열한 `⛔ 필수 — 다중 파일 전체 처리` 경고 섹션을 system prompt 앞부분에 동적 삽입. CODE_RULES 내 원칙보다 눈에 띄는 위치에서 지시해 소형 모델이 무시하기 어렵게 했다.
 
 ```python
 col_ref_lines = []
@@ -532,6 +662,18 @@ flowchart LR
 | 19 | `builder.py` code 모드에 실제 컬럼명 참조 섹션 없음 → 플레이스홀더 사용 | ✅ 수정 완료 |
 | 20 | `code_executor.py` 자동 수정 프롬프트에 KeyError 컬럼명 힌트 없음 | ✅ 수정 완료 |
 | 21 | 기본 Ollama 모델 `None` → 앱 최초 실행 시 모델 미선택 오류 | ✅ 수정 완료 (`gemma3:27b`) |
+| 22 | `intent.py` merge 힌트 점수 이중 누적 → "1월 합계" 같은 집계 요청이 merge로 오분류 | ✅ 수정 완료 |
+| 23 | `task_router` FILTER+AGG 복합 요청 → filter 단독 도구로 잘못 라우팅 | ✅ 수정 완료 |
+| 24 | `merge_same_format()` 소계 탐지가 첫 텍스트 컬럼에만 적용 → 타 컬럼 소계 미탐지 | ✅ 수정 완료 |
+| 25 | `code_rules.py` 다중 파일 중 하나만 접근하는 LLM 생성 코드 패턴 방지 규칙 없음 | ✅ 수정 완료 |
+| 26 | `examples.py` 다중 파일 필터+집계 복합 예시 없음 → 단일 파일 패턴 복사 | ✅ 수정 완료 |
+| 27 | `pipeline_executor` 파일 수·대화 길이 무관하게 항상 full 프롬프트 전송 | ✅ 수정 완료 (auto_compact) |
+| 28 | `excel_processor` ffill이 소계 행 앵커 컬럼을 부모 그룹명으로 오염 | ✅ 수정 완료 (is_continuation 마스크 복원) |
+| 29 | `code_rules.py` 다중 파일 접근 원칙이 "안내" 수준 → 소형 모델이 무시 | ✅ 수정 완료 (⛔ 절대 금지 + 실제 잘못된 코드 예시 포함) |
+| 30 | `examples.py` "N행 뽑아서 합계" 패턴 예시 없음 → 단일 파일 코드 생성 | ✅ 수정 완료 (filter_head_sum_multifile 추가) |
+| 31 | `code_executor` `pd.Series` 반환 시 "저장할 표 없음" 오류 | ✅ 수정 완료 (항목\|값 2열 DataFrame 자동 변환) |
+| 32 | `builder.py` 다중 파일 경고가 CODE_RULES 내부에 묻혀 우선순위 낮음 | ✅ 수정 완료 (파일명 나열 동적 경고 섹션 앞부분 삽입) |
+| 33 | "N행 뽑아서 합계" → LLM code 모드에서 단일 파일·Series 반환 반복 | ✅ 수정 완료 (head_aggregate 확정 도구로 LLM 우회) |
 
 ---
 
@@ -552,3 +694,7 @@ flowchart LR
 - **AST 샌드박스** — `exec` 전에 코드를 트리로 파싱해 위험 모듈·함수를 차단하는 방식이 정교하다.
 - **`last_result` 체이닝** — 이전 실행 결과가 다음 프롬프트와 executor 네임스페이스에 자동 주입되어 연속 작업이 자연스럽게 동작한다.
 - **재시도 불가 조기 반환** — `execute_with_retry()`가 타임아웃·보안 위반 오류를 감지해 불필요한 LLM 재시도를 차단한다. KeyError는 실제 컬럼 스키마와 함께 LLM에 전달하여 수정 정확도를 높인다.
+- **다중 파일 전체 순회 원칙** — `code_rules.py`에 `⛔ 절대 금지` 규칙으로 격상되어, 실제 발생한 잘못된 코드 패턴을 직접 예시로 포함했다.
+- **auto_compact 임계값 설계** — 파일 5개 이상(주요 사용 사례 3개 파일을 compact로 전환하지 않기 위한 여유), 대화 10메시지 이상 이중 조건으로 불필요한 토큰 낭비를 방지한다.
+- **확정 도구 우선 원칙** — `head_aggregate`처럼 반복적으로 LLM 코드 생성이 실패하는 패턴은 확정 도구로 추출한다. 모델 품질·프롬프트 품질과 무관하게 항상 올바른 결과를 보장한다.
+- **ffill 소계 복원 이중 방어** — 소스(`excel_processor.py` ffill 후 복원)와 다운스트림(`merge_same_format` 다중 컬럼 소계 탐지) 양쪽에서 소계 행 오염을 차단한다. 어느 한쪽이 실패해도 나머지가 방어한다.

@@ -697,17 +697,17 @@ def merge_same_format(
     # 3. 세로 concat (공통 컬럼만)
     combined = pd.concat([df[common_cols] for df in dfs], ignore_index=True)
 
-    # 3-1. 소계/합계 행 분리 — 집계 행은 groupby 대상에서 제외
-    _SUBTOTAL_PATTERNS = {"소 계", "소계", "합 계", "합계", "계", "총계", "총 계", "내부흡수액"}
-    _first_text_col = next(
-        (c for c in common_cols if not pd.api.types.is_numeric_dtype(combined[c])), None
-    )
-    if _first_text_col:
-        _is_subtotal = combined[_first_text_col].astype(str).str.strip().isin(_SUBTOTAL_PATTERNS)
-        subtotal_rows = combined[_is_subtotal].copy()
+    # 3-1. 소계/합계 행 제거 — 모든 텍스트 컬럼 대상 (벡터화)
+    _SUBTOTAL_PATTERNS = {"소 계", "소계", "합 계", "합계", "계", "총계", "총 계",
+                          "내부흡수액", "소  계", "합  계"}
+    _text_cols_for_filter = [
+        c for c in common_cols if not pd.api.types.is_numeric_dtype(combined[c])
+    ]
+    if _text_cols_for_filter:
+        _is_subtotal = combined[_text_cols_for_filter].apply(
+            lambda col: col.astype(str).str.strip().isin(_SUBTOTAL_PATTERNS)
+        ).any(axis=1)
         combined = combined[~_is_subtotal].reset_index(drop=True)
-    else:
-        subtotal_rows = pd.DataFrame()
 
     # 4. 기준 키 컬럼 추론
     key_cols = _infer_key_cols(dfs[0], prompt, common_cols)
@@ -749,12 +749,6 @@ def merge_same_format(
         non_null = result[col].dropna()
         if len(non_null) and (non_null % 1 == 0).all():
             result[col] = result[col].astype("Int64")
-
-    # 8. 소계 행 중 첫 번째 파일 기준만 결과 하단에 참고용으로 추가 (중복 제거)
-    if not subtotal_rows.empty:
-        sub_dedup = subtotal_rows.drop_duplicates(subset=key_cols, keep="first")
-        sub_dedup = sub_dedup[[c for c in orig_order if c in sub_dedup.columns]]
-        result = pd.concat([result, sub_dedup], ignore_index=True)
 
     file_names = " + ".join(f["name"] for f in files_info[:3])
     if len(files_info) > 3:
@@ -848,4 +842,41 @@ def filter_then_sort(
         "value": result,
         "label": "필터 + 정렬 결과",
         "summary": f"{filter_summary} → {sort_col} {direction} 정렬",
+    }
+
+
+def head_aggregate(
+    files_info: list[dict],
+    prompt: str = "",
+    **kwargs,
+) -> dict:
+    """처음 N행의 수치 컬럼 합계를 파일별로 계산.
+
+    "N행 뽑아서 합계내줘" 같은 요청을 LLM 없이 처리.
+    """
+    import re
+    m = re.search(r"(\d+)\s*행", prompt)
+    n = int(m.group(1)) if m else 5
+
+    rows = []
+    for entry in files_info:
+        df = read_file(entry.get("name", ""), sheet_name=entry.get("sheet"))
+        if df is None or df.empty:
+            continue
+        top_n = df.iloc[:n]
+        num_cols = [c for c in top_n.columns if pd.api.types.is_numeric_dtype(top_n[c])]
+        row: dict = {"파일명": entry.get("name", "")}
+        for col in num_cols:
+            row[col] = top_n[col].sum()
+        rows.append(row)
+
+    if not rows:
+        return {"type": "error", "value": "처리할 파일이 없습니다."}
+
+    result = pd.DataFrame(rows)
+    return {
+        "type": "dataframe",
+        "value": result,
+        "label": f"처음 {n}행 합계",
+        "summary": f"{len(files_info)}개 파일 × 처음 {n}행 수치 컬럼 합계",
     }

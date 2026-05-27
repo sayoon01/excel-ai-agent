@@ -4,7 +4,7 @@ from __future__ import annotations
 from core.tools.chart_tools import create_chart
 from core.tools.data_tools import (
     aggregate_data, export_data, filter_rows, filter_then_sort,
-    merge_files, merge_same_format, sort_rows,
+    head_aggregate, merge_files, merge_same_format, sort_rows,
 )
 from core.tools.file_tools import analyze_missing, get_profile, get_row_count
 from core.tools.tool_cache import get as cache_get, put as cache_put
@@ -16,6 +16,7 @@ _REGISTRY: dict[str, callable] = {
     "aggregate_data":   aggregate_data,
     "filter_rows":      filter_rows,
     "filter_then_sort": filter_then_sort,
+    "head_aggregate":   head_aggregate,
     "sort_rows":        sort_rows,
     "merge_files":        merge_files,
     "merge_same_format":  merge_same_format,

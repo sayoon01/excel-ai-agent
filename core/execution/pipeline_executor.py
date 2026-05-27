@@ -42,6 +42,7 @@ def estimate_tokens(text: str, model_name: str = "") -> int:
         return len(text) // 3
 
 
+
 def run_pre_generation(
     user_prompt: str,
     files_info: list[dict],
@@ -85,11 +86,18 @@ def run_pre_generation(
         except Exception:
             pass
 
+    # 파일 5개 이상 또는 대화 10턴 이상이면 compact 자동 전환
+    auto_compact = (
+        compact
+        or len(files_info) >= 5
+        or len(recent_messages or []) >= 10
+    )
+
     # System prompt 빌드 (메트릭 포함)
     state.system_prompt = build_system_prompt(
         files_info,
         state.intent,
-        compact=compact,
+        compact=auto_compact,
         last_result_info=last_result_info,
         recent_messages=recent_messages,
         persona_key=state.persona_key,

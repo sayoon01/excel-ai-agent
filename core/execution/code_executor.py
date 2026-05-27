@@ -279,6 +279,11 @@ def execute(
     elif isinstance(result_raw, pd.DataFrame):
         result_type = "dataframe"
         result_df = result_raw
+    elif isinstance(result_raw, pd.Series):
+        # Series → 2열 DataFrame으로 변환 (예: .sum() 결과)
+        result_type = "dataframe"
+        result_df = result_raw.reset_index()
+        result_df.columns = ["항목", "값"]
     elif isinstance(result_raw, (int, float)) and result_raw is not None:
         result_type = "number"
     elif isinstance(result_raw, str):

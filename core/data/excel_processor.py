@@ -116,6 +116,14 @@ def read_excel_smart(path: Path, sheet_name: str | None = None) -> pd.DataFrame:
                 df.loc[is_continuation, col] = (
                     df.loc[is_continuation, col].ffill()
                 )
+            # ffill로 오염된 소계 행 앵커 복원
+            # 병합셀 NaN → ffill로 부모 그룹명이 채워진 행 중 보조 컬럼에 소계 패턴이 있으면 복원
+            _SUBTOTAL_PAT = {"소 계", "소계", "합 계", "합계", "계", "총계", "총 계",
+                             "소  계", "합  계", "내부흡수액"}
+            if len(text_cols) > 1:
+                for col in text_cols[1:]:
+                    _hits = df[col].astype(str).str.strip().isin(_SUBTOTAL_PAT)
+                    df.loc[_hits & is_continuation, anchor] = df.loc[_hits & is_continuation, col]
 
         # ── 3단계: 숫자 변환, float→Int64 ────────────────────────────────
         df = _coerce_numeric_cols(df)

@@ -4,7 +4,7 @@
 
 엑셀·CSV 파일을 업로드하고 AI와 대화하면서 데이터를 분석·변환·병합하는 Streamlit 기반 대화형 앱입니다.
 
-> 작성일: 2026-05-22 (최종 수정: 2026-05-27)
+> 작성일: 2026-05-22 (최종 수정: 2026-05-27 v2)
 
 ---
 
@@ -15,7 +15,7 @@
 | 멀티 모델 지원 | Ollama (로컬), Google Gemini, OpenAI GPT — temperature / max_tokens 조절 가능 |
 | 파일 관리 | xlsx / xls / csv 다중 업로드, 중복 처리, 멀티 시트 선택, 전체 미리보기 |
 | 3-mode 요청 처리 | `tool` (정형 작업 직접 실행) / `code` (LLM 코드 생성+실행) / `llm` (자연어 응답) 자동 분기 |
-| Tool 직접 실행 | 필터·집계·정렬·병합·차트 등 정형 요청을 LLM 없이 도구로 즉시 처리 |
+| Tool 직접 실행 | 필터·집계·정렬·병합·차트 + "N행 합계"(head_aggregate) 등 정형 요청을 LLM 없이 도구로 즉시 처리 |
 | RAG 기반 동적 few-shot 주입 | 사용자 질문을 벡터 유사도로 검색해 가장 관련 있는 코드 예시를 시스템 프롬프트에 자동 주입 |
 | 피드백 루프 | 성공한 코드 실행 결과를 자동으로 RAG 스토어에 추가 — 다음 유사 질문의 few-shot 예시로 활용 |
 | 분석 히스토리 검색 | 사이드바에서 과거 채팅의 분석 코드를 키워드로 검색, 원클릭으로 채팅에 재사용 |
@@ -36,6 +36,8 @@
 | 데이터 품질 프로파일링 | 결측률·중복·집계행·이상값·타입 혼재를 규칙 기반으로 자동 진단 |
 | AI 품질 코멘트 | 진단 결과를 LLM이 한국어로 요약 (1회 생성 후 영구 캐시) |
 | 코드 오류 자동 수정 | 실행 실패 시 실제 컬럼명 스키마 포함 프롬프트로 LLM이 자동 수정·재실행 |
+| Series 결과 자동 변환 | `.sum()` 등 Series 반환 코드 실행 시 "항목\|값" 2열 표로 자동 변환 |
+| ffill 소계 행 복원 | 병합 셀로 NaN → ffill로 오염된 소계 행의 앵커 컬럼을 자동 복원 |
 | 결과 자동 저장 | `result` DataFrame이 있으면 `results/`에 xlsx로 자동 저장·다운로드 |
 | 후속 질문 추천 | 답변 후 LLM이 이어서 할 만한 작업 3개를 버튼으로 제안 |
 | 대화 내보내기 | 전체 채팅을 `.md` 파일로 저장 |
@@ -91,9 +93,9 @@ excel-platform/
 │   │   ├── intent.py                   # 의도 분류 (9종 — merge_union/merge_join 세분화 포함)
 │   │   └── task_router.py              # tool/code/llm 3-mode 분류 + classify_task()
 │   ├── execution/                      # 코드 실행 / 파이프라인
-│   │   ├── code_executor.py            # AST 검증 + exec() 샌드박스 + execute_with_retry
+│   │   ├── code_executor.py            # AST 검증 + exec() 샌드박스 + execute_with_retry (KeyError 힌트)
 │   │   ├── pipeline.py                 # PipelineState · StageMetrics · SessionHistory · ToolExecution
-│   │   └── pipeline_executor.py        # run_pre_generation() · parse_llm_response() · record_pipeline_run()
+│   │   └── pipeline_executor.py        # run_pre_generation() · auto_compact · parse_llm_response()
 │   ├── rag/                            # RAG 기반 동적 few-shot 주입
 │   │   ├── __init__.py
 │   │   ├── embedder.py                 # OpenAIEmbedder / GeminiEmbedder / KeywordEmbedder(한국어 bigram TF-IDF)
@@ -112,8 +114,8 @@ excel-platform/
 │   │   └── tool_cache.py               # MD5 키 · mtime 무효화 · TTL 10분 캐시
 │   ├── prompts/                        # 프롬프트 빌더
 │   │   ├── builder.py                  # 동적 system prompt 조합 + RAG 예시 주입 + 실제 컬럼명 참조 섹션
-│   │   ├── code_rules.py               # 코드 생성 규칙 — 파일 통합 3단계 CRITICAL 판단 규칙 (추상적 표현)
-│   │   └── examples.py                 # EXAMPLE_CORPUS(18개 RAG 검색 대상) + 정적 fallback EXAMPLES (동적 차트 템플릿)
+│   │   ├── code_rules.py               # 코드 생성 규칙 — 파일 통합 CRITICAL + 다중 파일 접근 원칙
+│   │   └── examples.py                 # EXAMPLE_CORPUS(19개 RAG 검색 대상) + 정적 fallback EXAMPLES
 │   ├── chat_history.py                 # 대화 이력 저장 · search_history() 키워드 검색
 │   ├── persona_manager.py              # 페르소나 CRUD + intent 매핑
 │   └── system_monitor.py               # GPU/CPU/RAM/디스크 + Ollama VRAM 조회·로드·언로드
@@ -326,7 +328,11 @@ flowchart TD
 
 **라우팅 버그 수정:** `intent.py`가 `merge_union`을 감지해도 `task_router`의 키워드 루프가 덮어쓰는 버그가 수정됐다. 이제 intent 결과가 키워드 루프보다 먼저 평가된다.
 
-**소계 행 처리:** `merge_same_format`이 `소 계`, `합계` 등 소계 행을 groupby 전에 분리하고 집계 완료 후 재부착한다. 예실대비표처럼 항목별 소계가 있는 예산 파일을 올바르게 통합한다.
+**복합 의도 처리:** "뽑아서 합계" 같은 필터+집계 2단계 요청이 filter 단독 도구로 잘못 라우팅되던 문제가 수정됐다. AGG+FILTER 키워드 동시 감지 시 code 모드(0.82)로 전환한다.
+
+**intent 이중 누적 방지:** merge 힌트 점수가 기존 merge 키워드 점수에 추가 누적되어 "1월 합계" 같은 집계 요청이 merge로 오분류되던 버그가 수정됐다.
+
+**소계 행 처리:** `merge_same_format`이 `소 계`, `합계` 등 소계 행을 groupby 전에 모든 텍스트 컬럼 기준 벡터화 탐지로 제거한다. 예실대비표처럼 항목별 소계가 있는 예산 파일을 올바르게 통합한다.
 
 ### 4. Tool 직접 실행 레이어 (`core/tools/`)
 
@@ -410,6 +416,10 @@ flowchart TD
 ```
 
 **자동 수정 프롬프트:** 실패 시 실제 파일 컬럼 스키마를 포함해 LLM에 수정 요청. KeyError 발생 시 잘못 사용한 컬럼명과 올바른 컬럼 목록을 함께 전달해 수정 정확도를 높인다.
+
+**다중 파일 접근 원칙:** `code_rules.py`에 파일명을 지목하지 않은 경우 전체 순회(`files.items()`) 원칙이 명시됐다. LLM이 다중 파일 요청에서 하나의 파일만 접근하는 코드를 생성하는 패턴을 차단한다.
+
+**auto_compact:** 파일 5개 이상 또는 대화 10메시지 이상이면 시스템 프롬프트를 compact 모드로 자동 전환한다. 긴 대화에서 토큰 낭비를 줄이면서 핵심 3파일 사용 사례에는 영향을 주지 않는다.
 
 **실행 환경 (import 불필요)**
 

@@ -135,6 +135,16 @@ def build_system_prompt(
     file_section = f"## 현재 업로드된 파일\n{_summarize_files(files_info)}"
     parts = [persona, file_section]
 
+    # 다중 파일: 코드 모드에서 단독 접근 금지를 파일명과 함께 명시
+    if mode != "llm" and len(files_info) > 1:
+        _fnames = ", ".join(f["name"] for f in files_info)
+        parts.append(
+            f"## ⛔ 필수 — 다중 파일 전체 처리\n"
+            f"현재 로드된 파일 {len(files_info)}개: {_fnames}\n"
+            f"요청에 특정 파일명이 명시되지 않은 경우, `files[\"파일명\"]` 단독 접근 금지.\n"
+            f"반드시 `for name, df in files.items():` 로 **{len(files_info)}개 파일 전체**를 처리하세요."
+        )
+
     if last_result_info:
         cols = ", ".join(last_result_info["col_names"])
         parts.append(
