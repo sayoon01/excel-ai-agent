@@ -4,7 +4,7 @@
 
 엑셀·CSV 파일을 업로드하고 AI와 대화하면서 데이터를 분석·변환·병합하는 Streamlit 기반 대화형 앱입니다.
 
-> 작성일: 2026-05-22 (최종 수정: 2026-05-26)
+> 작성일: 2026-05-22 (최종 수정: 2026-05-27)
 
 ---
 
@@ -71,7 +71,7 @@ ollama pull qwen2.5
 ollama pull gemma3:27b
 ```
 
-앱 실행 후 설정 탭에서 설치된 모델이 자동으로 표시됩니다.
+앱 실행 후 설정 탭에서 설치된 모델이 자동으로 표시됩니다. 기본 모델은 `gemma3:27b`로 설정되어 있습니다.
 
 ---
 
@@ -111,9 +111,9 @@ excel-platform/
 │   │   ├── file_tools.py               # get_row_count / analyze_missing / get_profile
 │   │   └── tool_cache.py               # MD5 키 · mtime 무효화 · TTL 10분 캐시
 │   ├── prompts/                        # 프롬프트 빌더
-│   │   ├── builder.py                  # 동적 system prompt 조합 + RAG 예시 주입
-│   │   ├── code_rules.py               # 코드 생성 규칙 — 파일 통합 3단계 CRITICAL 판단 규칙 포함
-│   │   └── examples.py                 # EXAMPLE_CORPUS(18개 RAG 검색 대상) + 정적 fallback EXAMPLES
+│   │   ├── builder.py                  # 동적 system prompt 조합 + RAG 예시 주입 + 실제 컬럼명 참조 섹션
+│   │   ├── code_rules.py               # 코드 생성 규칙 — 파일 통합 3단계 CRITICAL 판단 규칙 (추상적 표현)
+│   │   └── examples.py                 # EXAMPLE_CORPUS(18개 RAG 검색 대상) + 정적 fallback EXAMPLES (동적 차트 템플릿)
 │   ├── chat_history.py                 # 대화 이력 저장 · search_history() 키워드 검색
 │   ├── persona_manager.py              # 페르소나 CRUD + intent 매핑
 │   └── system_monitor.py               # GPU/CPU/RAM/디스크 + Ollama VRAM 조회·로드·언로드
@@ -324,6 +324,10 @@ flowchart TD
 
 **merge_files 폴백 개선:** 공통 키 컬럼이 없을 경우 과거의 `pd.concat` 무단 실행 → 현재는 명확한 오류 메시지 반환 + 수직 통합 요청 안내.
 
+**라우팅 버그 수정:** `intent.py`가 `merge_union`을 감지해도 `task_router`의 키워드 루프가 덮어쓰는 버그가 수정됐다. 이제 intent 결과가 키워드 루프보다 먼저 평가된다.
+
+**소계 행 처리:** `merge_same_format`이 `소 계`, `합계` 등 소계 행을 groupby 전에 분리하고 집계 완료 후 재부착한다. 예실대비표처럼 항목별 소계가 있는 예산 파일을 올바르게 통합한다.
+
 ### 4. Tool 직접 실행 레이어 (`core/tools/`)
 
 confidence ≥ 0.80인 정형 요청은 LLM을 거치지 않고 도구로 직접 처리합니다.
@@ -339,7 +343,7 @@ confidence ≥ 0.80인 정형 요청은 LLM을 거치지 않고 도구로 직접
 | `analyze_missing` | 결측치 분석 |
 | `get_profile` | 컬럼 프로파일 |
 | `merge_files` | 키 기반 수평 결합 (공통 키 없으면 오류 반환) |
-| `merge_same_format` | 동일 양식 n개 파일 concat → groupby → 평균 통합 |
+| `merge_same_format` | 동일 양식 n개 파일 concat → 소계 행 분리 → groupby → 평균 통합 → 소계 행 재부착 |
 | `export_data` | 결과 파일 저장 |
 
 **컬럼 추론 3단계** (`_infer_col()`):
@@ -404,6 +408,8 @@ flowchart TD
     Fail --> Retry --> Exec
     Exec -->|성공| Result --> Save
 ```
+
+**자동 수정 프롬프트:** 실패 시 실제 파일 컬럼 스키마를 포함해 LLM에 수정 요청. KeyError 발생 시 잘못 사용한 컬럼명과 올바른 컬럼 목록을 함께 전달해 수정 정확도를 높인다.
 
 **실행 환경 (import 불필요)**
 
