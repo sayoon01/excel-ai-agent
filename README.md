@@ -1,4 +1,5 @@
 # Excel AI Platform
+<img width="1536" height="1024" alt="ChatGPT Image 2026년 6월 8일 오후 01_54_37" src="https://github.com/user-attachments/assets/14a15511-6d5c-4493-b728-08141349eda4" />
 
 <img width="1408" height="2338" alt="image" src="https://github.com/user-attachments/assets/355c5062-8ed8-4b97-a948-36584a4282ae" />
 <img width="1536" height="1024" alt="ChatGPT Image 2026년 6월 8일 오후 01_54_37" src="https://github.com/user-attachments/assets/20606c5b-938f-488f-be5d-fd1a8cff2123" />
