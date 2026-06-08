@@ -4,7 +4,7 @@
 
 엑셀·CSV 파일을 업로드하고 AI와 대화하면서 데이터를 분석·변환·병합하는 Streamlit 기반 대화형 앱입니다.
 
-> 작성일: 2026-05-22 (최종 수정: 2026-05-27 v2)
+> 작성일: 2026-05-22 (최종 수정: 2026-06-08 v3)
 
 ---
 
@@ -12,10 +12,10 @@
 
 | 기능 | 설명 |
 |------|------|
-| 멀티 모델 지원 | Ollama (로컬), Google Gemini, OpenAI GPT — temperature / max_tokens 조절 가능 |
+| 멀티 모델 지원 | Ollama(로컬, 기본 `gemma3:27b`), Gemini(`gemini-2.0-flash` 외 3종), OpenAI(`gpt-4o`·`gpt-4o-mini`·`gpt-4-turbo`·`gpt-3.5-turbo`) — temperature / max_tokens 조절 가능 |
 | 파일 관리 | xlsx / xls / csv 다중 업로드, 중복 처리, 멀티 시트 선택, 전체 미리보기 |
 | 3-mode 요청 처리 | `tool` (정형 작업 직접 실행) / `code` (LLM 코드 생성+실행) / `llm` (자연어 응답) 자동 분기 |
-| Tool 직접 실행 | 필터·집계·정렬·병합·차트 + "N행 합계"(head_aggregate) 등 정형 요청을 LLM 없이 도구로 즉시 처리 |
+| Tool 직접 실행 | 12종 정형 도구 — 필터·집계·정렬·병합·차트·`head_aggregate`(N행 합계)·`merge_same_format`(동일 양식 통합) 등 LLM 없이 즉시 처리 |
 | RAG 기반 동적 few-shot 주입 | 사용자 질문을 벡터 유사도로 검색해 가장 관련 있는 코드 예시를 시스템 프롬프트에 자동 주입 |
 | 피드백 루프 | 성공한 코드 실행 결과를 자동으로 RAG 스토어에 추가 — 다음 유사 질문의 few-shot 예시로 활용 |
 | 분석 히스토리 검색 | 사이드바에서 과거 채팅의 분석 코드를 키워드로 검색, 원클릭으로 채팅에 재사용 |
@@ -29,8 +29,8 @@
 | Approval panel | LLM 코드 확인 후 [실행] / [수정] / [건너뛰기] 선택 |
 | 대화 연속성 | 이전 결과(`last_result`)를 다음 질문의 입력으로 자동 체이닝 |
 | 멀티헤더 파싱 | 병합 셀 2단 헤더 자동 감지·평탄화 (오탐 방지 로직 포함) |
-| 필터 패턴 확장 | 비교·포함·제외·상위/하위·문자열 동등·날짜 범위 등 8가지 패턴 지원 |
-| 차트 5종 | 막대·선·파이·산점도(추세선)·히스토그램·박스플롯 자동 생성 |
+| 필터 패턴 확장 | 8가지 — 비교·포함·제외·상위/하위·문자열 동등·날짜 범위(절대/ISO/상대: 올해·작년·이번달·지난달·1~4분기) |
+| 차트 6종 | 막대·선·파이·산점도(추세선)·히스토그램·박스플롯 자동 생성 (한국어 폰트 자동 탐지) |
 | 시스템 모니터링 | GPU(nvidia-smi)·CPU·RAM·디스크 실시간 조회 + Ollama VRAM 모델 언로드/로드 |
 | 비교 테스트 | 2~3개 페르소나에 동일 프롬프트로 응답·속도 비교 |
 | 데이터 품질 프로파일링 | 결측률·중복·집계행·이상값·타입 혼재를 규칙 기반으로 자동 진단 |
@@ -39,6 +39,8 @@
 | Series 결과 자동 변환 | `.sum()` 등 Series 반환 코드 실행 시 "항목\|값" 2열 표로 자동 변환 |
 | ffill 소계 행 복원 | 병합 셀로 NaN → ffill로 오염된 소계 행의 앵커 컬럼을 자동 복원 |
 | 결과 자동 저장 | `result` DataFrame이 있으면 `results/`에 xlsx로 자동 저장·다운로드 |
+| xlsx 자동 포맷팅 | 저장된 파일의 헤더 볼드·청색 배경, 수치 컬럼 천단위(`#,##0.##`) 포맷, 컬럼 너비 자동 조정 |
+| `save()` 다중 포맷 | `save("결과.xlsx")` 또는 `save("결과.csv")` — 두 포맷 모두 지원 |
 | 후속 질문 추천 | 답변 후 LLM이 이어서 할 만한 작업 3개를 버튼으로 제안 |
 | 대화 내보내기 | 전체 채팅을 `.md` 파일로 저장 |
 
@@ -106,16 +108,17 @@ excel-platform/
 │   ├── llm/                            # LLM 호출 / 모델 비교
 │   │   ├── llm_client.py               # OllamaClient / GeminiClient / OpenAIClient
 │   │   └── model_comparator.py         # 페르소나 비교 테스트 실행
-│   ├── tools/                          # Tool 직접 실행 레이어
+│   ├── tools/                          # Tool 직접 실행 레이어 (12종)
 │   │   ├── dispatcher.py               # dispatch_tool() — 도구 레지스트리 + 캐시 연동
-│   │   ├── data_tools.py               # aggregate / filter / sort / merge_files / merge_same_format
-│   │   ├── chart_tools.py              # bar / line / pie / scatter / histogram / boxplot
+│   │   ├── data_tools.py               # aggregate / filter / sort / filter_then_sort / head_aggregate / merge_files / merge_same_format / export_data
+│   │   ├── chart_tools.py              # bar / line / pie / scatter / histogram / boxplot (한국어 폰트 자동 탐지)
 │   │   ├── file_tools.py               # get_row_count / analyze_missing / get_profile
 │   │   └── tool_cache.py               # MD5 키 · mtime 무효화 · TTL 10분 캐시
 │   ├── prompts/                        # 프롬프트 빌더
 │   │   ├── builder.py                  # 동적 system prompt 조합 + RAG 예시 주입 + 실제 컬럼명 참조 섹션
 │   │   ├── code_rules.py               # 코드 생성 규칙 — 파일 통합 CRITICAL + 다중 파일 접근 원칙
-│   │   └── examples.py                 # EXAMPLE_CORPUS(19개 RAG 검색 대상) + 정적 fallback EXAMPLES
+│   │   ├── examples.py                 # EXAMPLE_CORPUS(19개 RAG 검색 대상) + 정적 fallback EXAMPLES
+│   │   └── personas.py                 # 프리셋 페르소나 시스템 프롬프트 정의 (analyst·engineer·merger 등)
 │   ├── chat_history.py                 # 대화 이력 저장 · search_history() 키워드 검색
 │   ├── persona_manager.py              # 페르소나 CRUD + intent 매핑
 │   └── system_monitor.py               # GPU/CPU/RAM/디스크 + Ollama VRAM 조회·로드·언로드
@@ -340,17 +343,18 @@ confidence ≥ 0.80인 정형 요청은 LLM을 거치지 않고 도구로 직접
 
 | 도구 | 처리 내용 |
 |------|----------|
-| `aggregate_data` | 합계·평균·최대·최소·카운트 + 그룹바이 |
-| `filter_rows` | 비교·포함·제외·상위/하위·문자열 동등·날짜 범위 (8패턴) |
-| `sort_rows` | 컬럼 기준 오름/내림차순 정렬 |
-| `filter_then_sort` | 필터 → 정렬 복합 |
-| `create_chart` | 막대·선·파이·산점도·히스토그램·박스플롯 |
+| `aggregate_data` | 합계·평균·최대·최소·카운트 + `X별` 그룹바이 (감지된 컬럼이 수치형이거나 못 찾으면 첫 카테고리 컬럼으로 자동 폴백) |
+| `filter_rows` | 8패턴 — 상위/하위 N, 숫자 비교(≥≤><=), 문자열 포함/제외, 컬럼 간 비교, 결측 제거, 숫자 동등, 문자열 동등, 날짜 범위 |
+| `sort_rows` | 멀티컬럼 오름/내림차순 정렬 |
+| `filter_then_sort` | 필터 → 정렬 체이닝 |
+| `head_aggregate` | "N행 뽑아서 합계" — 파일별 처음 N행 수치 컬럼 합계를 DataFrame으로 (전 파일 순회) |
+| `create_chart` | 막대·선·파이·산점도(추세선)·히스토그램·박스플롯 |
 | `get_row_count` | 행 수 조회 |
-| `analyze_missing` | 결측치 분석 |
-| `get_profile` | 컬럼 프로파일 |
-| `merge_files` | 키 기반 수평 결합 (공통 키 없으면 오류 반환) |
-| `merge_same_format` | 동일 양식 n개 파일 concat → 소계 행 분리 → groupby → 평균 통합 → 소계 행 재부착 |
-| `export_data` | 결과 파일 저장 |
+| `analyze_missing` | 결측치 컬럼별 수·비율 |
+| `get_profile` | 컬럼 타입·고유값·결측·최소/최대 프로파일 |
+| `merge_files` | 키 기반 수평 결합 (공통 키 없으면 명확한 오류 + 수직 통합 안내) |
+| `merge_same_format` | 동일 양식 n개 파일 concat → 소계 행 분리 → groupby → numeric mean(코드성 컬럼은 first)·text first → 소계 행 재부착 → 원본 컬럼 순서 복원 |
+| `export_data` | 현재 데이터(last_result 우선)를 `export_{ts}.xlsx`로 저장 |
 
 **컬럼 추론 3단계** (`_infer_col()`):
 1. 문자열 완전 일치
@@ -415,7 +419,17 @@ flowchart TD
     Exec -->|성공| Result --> Save
 ```
 
-**자동 수정 프롬프트:** 실패 시 실제 파일 컬럼 스키마를 포함해 LLM에 수정 요청. KeyError 발생 시 잘못 사용한 컬럼명과 올바른 컬럼 목록을 함께 전달해 수정 정확도를 높인다.
+**AST 검증 차단 목록:**
+- `BLOCKED_MODULES`: `os`·`subprocess`·`sys`·`shutil`·`importlib`·`socket`·`http`·`urllib`·`requests`·`httpx`·`pathlib`·`glob`·`pickle`·`shelve`·`marshal`·`ctypes`·`multiprocessing`·`threading`·`signal`·`atexit` 등
+- `BLOCKED_BUILTINS`: `exec`·`eval`·`compile`·`__import__`·`open`·`input`·`breakpoint`·`globals`·`locals`·`vars`·`getattr`·`setattr`·`delattr`·`memoryview`
+- 사전 주입된 `pd`/`np`/`matplotlib`/`functools`의 `import` 문은 조용히 제거되고, 그 외 `import`는 명시적 오류 메시지로 안내
+
+**자동 수정 프롬프트:** 실패 시 실제 파일 컬럼 스키마를 포함해 LLM에 수정 요청. KeyError 발생 시 잘못 사용한 컬럼명과 올바른 컬럼 목록을 함께 전달해 수정 정확도를 높인다. 타임아웃·보안 위반은 재시도 무의미하므로 즉시 반환한다.
+
+**xlsx 자동 포맷팅(openpyxl):** `save("*.xlsx")` 호출 또는 자동 저장 시 다음 포맷이 적용된다.
+- 헤더: 청색(`#4472C4`) 배경 + 흰색 볼드 + 중앙 정렬
+- 수치 컬럼: `#,##0.##` 천단위 구분
+- 컬럼 너비: 셀 길이 기반 자동 조정 (8~40자 범위)
 
 **다중 파일 접근 원칙:** `code_rules.py`에 파일명을 지목하지 않은 경우 전체 순회(`files.items()`) 원칙이 명시됐다. LLM이 다중 파일 요청에서 하나의 파일만 접근하는 코드를 생성하는 패턴을 차단한다.
 
@@ -423,19 +437,28 @@ flowchart TD
 
 **실행 환경 (import 불필요)**
 
+`pd`, `np`, `plt`, `matplotlib`, `reduce`(functools)가 namespace에 사전 주입됩니다. `import` 문은 실행 직전 자동 제거되며, AST 검증 단계에서도 위반으로 표시됩니다.
+
 ```python
 df = files["파일명.xlsx"]              # 업로드된 파일 dict
+# 또는 전체 순회 (다중 파일 요청 시 필수)
+for name, df in files.items(): ...
 
-result = df[df["항목"] >= 100]         # DataFrame → st.dataframe()
-result = {"type": "number", "value": df["금액"].sum()}   # st.metric()
-result = {"type": "plot",   "value": fig}                # 인라인 차트
-save("결과.xlsx")                      # results/ 저장 + 다운로드 버튼
+result = df[df["항목"] >= 100]                            # DataFrame → st.dataframe()
+result = {"type": "number", "value": df["금액"].sum()}    # st.metric()
+result = {"type": "string", "value": "총 1,234건"}        # 텍스트 카드
+result = {"type": "plot",   "value": fig}                 # 인라인 차트
+
+save("결과.xlsx")                      # .xlsx → openpyxl 포맷팅(헤더 볼드·청색 배경·천단위·열폭 자동)
+save("결과.csv")                       # .csv 도 지원 (포맷팅 없음)
+# save() 호출이 없어도 result가 DataFrame이면
+# results/result_YYYYMMDD_HHMMSS.xlsx 로 자동 저장 + 다운로드 버튼 생성
 
 # n개 파일 체이닝 병합 — reduce 주입됨 (import 불필요)
 result = reduce(lambda l, r: pd.merge(l, r, on=key_col, how="left"), dfs)
 ```
 
-### 8. 차트 지원 (5종 + 추세선)
+### 8. 차트 지원 (6종 + 추세선)
 
 | 차트 | 키워드 | 특이사항 |
 |------|--------|---------|
@@ -450,20 +473,23 @@ result = reduce(lambda l, r: pd.merge(l, r, on=key_col, how="left"), dfs)
 
 ```mermaid
 flowchart LR
-    J[("data/personas.json")]
-    PM2["persona_manager.py\nCRUD"]
-    BD2["builder.py\nprompt 조합"]
-    PP2["persona_panel.py\n관리 UI"]
-    CH2["0_채팅.py\npills 선택기"]
+    PR["core/prompts/personas.py\n프리셋 시스템 프롬프트 정의"]
+    J[("data/personas.json\n프리셋 + 커스텀")]
+    PM2["core/persona_manager.py\nJSON CRUD + resolve_persona_key()"]
+    BD2["core/prompts/builder.py\nprompt 조합 + 컬럼 참조 주입"]
+    PP2["ui/persona_panel.py\n관리 UI"]
+    CH2["pages/0_채팅.py\npills 선택기"]
 
+    PR --> J
     J <-->|읽기/쓰기| PM2
-    PM2 --> BD2
-    PM2 --> PP2
+    PM2 --> BD2 & PP2
     BD2 --> CH2
 ```
 
-- **프리셋**: 편집·복제만 가능, 삭제 불가
-- **커스텀**: 생성·편집·복제·삭제 전부 가능
+- **프리셋(analyst·engineer·merger 등)**: `core/prompts/personas.py`에서 정의 → 편집·복제만 가능, 삭제 불가
+- **커스텀**: 생성·편집·복제·삭제 전부 가능 — `data/personas.json`에 누적
+- 페르소나 객체 스키마: `{name, description, type(preset|custom), about, response_style, system_prompt, intents[], created_at, updated_at}`
+- `resolve_persona_key(intent)`는 각 페르소나의 `intents[]` 목록을 검색해 매칭되는 키 반환 (없으면 `intent_fallback` — 기본 `analyst`)
 - System Prompt를 비워두면 About + Response style로 자동 생성
 
 ### 10. 데이터 품질 프로파일링
