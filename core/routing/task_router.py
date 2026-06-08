@@ -23,7 +23,8 @@ _TOOL_RULES: list[tuple[list[str], str, float]] = [
       "세로로 합치", "세로로 합쳐", "세로로 쌓",
       "세로 병합", "세로로 통합", "세로로 합산"],               "merge_same_format", 0.94),
     (["파일 통합", "파일들 통합", "하나로 통합",
-      "통합해", "통합해줘", "통합하고", "통합한 후"],            "merge_same_format", 0.85),
+      "통합해", "통합해줘", "통합하고", "통합한 후",
+      "합쳐", "합쳐줘", "합쳐서", "묶어", "묶고", "묶기"],       "merge_same_format", 0.91),
 
     # 집계
     (["합계", "총합", "sum", "총액"],                            "aggregate_data",  0.92),
@@ -35,25 +36,38 @@ _TOOL_RULES: list[tuple[list[str], str, float]] = [
       "이상인.*정렬", "이하인.*정렬", "보다 큰.*정렬"],                        "filter_then_sort", 0.90),
 
     # 필터 / 정렬
-    (["필터", "추출", "뽑아", "조건"],                                         "filter_rows", 0.88),
-    (["상위", "하위", "top", "bottom", "이상인", "이하인", "초과인", "미만인",
-      "보다 큰", "보다 작은", "포함된", "제외된", "결측 제거", "빈칸 제거"],    "filter_rows", 0.86),
-    (["정렬", "순서", "내림차순", "오름차순", "sort"],                          "sort_rows",   0.90),
+    (["필터", "추출", "뽑아", "조건", "걸러", "골라"],                         "filter_rows", 0.88),
+    (["상위", "하위", "top", "bottom",
+      "이상", "이하", "초과", "미만",  # 단독 비교어 (숫자가 끼어도 매칭)
+      "이상인", "이하인", "초과한", "미만인",
+      "보다 큰", "보다 작은", "보다 많은", "보다 적은",
+      "더 큰", "더 작은", "더 많은", "더 적은", "더 높은", "더 낮은",
+      "포함", "포함된", "들어간", "들어있", "들어가",
+      "비어있", "비어 있", "비었", "공백",
+      "제외", "제외된", "결측 제거", "빈칸 제거"],                              "filter_rows", 0.86),
+    (["정렬", "순서", "내림차순", "오름차순", "sort",
+      "큰 순", "큰순", "작은 순", "작은순",
+      "높은 순", "높은순", "낮은 순", "낮은순",
+      "많은 순", "많은순", "적은 순", "적은순",
+      "가나다순", "가나다 순", "역순", "순으로"],                                "sort_rows",   0.90),
 
-    # 일반 병합 (스키마 다른 파일 join/concat)
+    # 일반 병합 — 명시적 join 액션만 (합쳐/합쳐줘는 merge_same_format이 가져감)
     (["병합", "합치", "조인", "merge", "join"],                  "merge_files",     0.90),
 
     # 저장 / 내보내기
     (["저장", "다운로드", "내보내기", "export", "엑셀로", "파일로"], "export_data",  0.88),
 
-    # 차트 (tool 이름 없음 → needs_chart=True 로만 처리)
-    (["막대", "bar", "바차트"],                                      "create_chart", 0.88),
-    (["파이", "pie", "원형"],                                        "create_chart", 0.88),
-    (["선", "line", "라인", "추이"],                                 "create_chart", 0.82),
-    (["산점도", "scatter", "상관관계"],                              "create_chart", 0.88),
-    (["히스토그램", "histogram", "분포도", "빈도분포"],              "create_chart", 0.88),
-    (["박스플롯", "boxplot", "box plot", "사분위", "분위수"],        "create_chart", 0.88),
-    (["차트", "그래프", "시각화", "plot"],                           "create_chart", 0.80),
+    # 차트 — confidence를 filter_rows(0.86)·sort_rows(0.90)보다 높게(0.92)
+    # 설정해 "상위 10개를 차트로", "X별 평균을 막대로" 같은 복합 표현이
+    # 다른 도구로 빠지지 않게 함. "선" 단독은 false positive 위험이라 제거하고
+    # "선 그래프"/"라인"만 사용.
+    (["막대", "bar", "바차트", "막대 차트", "막대그래프", "막대 그래프"], "create_chart", 0.92),
+    (["파이", "pie", "원형", "파이 차트"],                                "create_chart", 0.92),
+    (["선 그래프", "라인", "line", "추이", "라인 차트", "선차트"],        "create_chart", 0.92),
+    (["산점도", "scatter", "상관관계"],                                    "create_chart", 0.92),
+    (["히스토그램", "histogram", "분포도", "빈도분포"],                    "create_chart", 0.92),
+    (["박스플롯", "boxplot", "box plot", "사분위", "분위수"],              "create_chart", 0.92),
+    (["차트", "그래프", "시각화", "plot"],                                 "create_chart", 0.92),
 ]
 
 _LLM_RULES: list[tuple[list[str], float]] = [
@@ -105,22 +119,76 @@ def _detect_options(prompt: str) -> dict:
     }
 
 
-_FILTER_KW = {"필터", "추출", "뽑아", "조건", "상위", "하위",
-              "이상인", "이상", "이하인", "이하", "초과인", "초과", "미만인", "미만",
-              "보다 큰", "보다 작은", "포함된", "포함", "제외된", "제외", "결측 제거"}
-_SORT_KW   = {"정렬", "순서", "내림차순", "오름차순", "sort"}
+_FILTER_KW = {"필터", "추출", "뽑아", "조건", "걸러", "골라", "상위", "하위",
+              "이상인", "이상", "이하인", "이하", "초과한", "초과", "미만인", "미만",
+              "보다 큰", "보다 작은", "보다 많은", "보다 적은",
+              "더 큰", "더 작은", "더 많은", "더 적은", "더 높은", "더 낮은",
+              "포함된", "포함", "들어간", "들어있", "들어가",
+              "비어있", "비어 있", "비었", "공백",
+              "제외된", "제외", "결측 제거"}
+_SORT_KW   = {"정렬", "순서", "내림차순", "오름차순", "sort",
+              "큰 순", "큰순", "작은 순", "작은순",
+              "높은 순", "높은순", "낮은 순", "낮은순",
+              "많은 순", "많은순", "적은 순", "적은순",
+              "가나다순", "가나다 순", "역순"}
 
 
 def _rule_classify(prompt: str, intent: str) -> dict:
     """1차 rule 기반 분류."""
     options = _detect_options(prompt)
 
+    # ── equality 필터 정규식 — intent 선행 라우팅보다 앞 ──────────────────────
+    # "주문번호가 'A001'인 행" 같은 ID 값 필터가 merge_join intent에 흡수되는 것 방지.
+    # 도메인 무관: "숫자/따옴표 + 인 + 공백 + 한글/영문 명사" 패턴만 검사.
+    import re as _re_eq
+    if (_re_eq.search(r"\d+\s*인\s+[가-힣A-Za-z]", prompt)
+            or _re_eq.search(r"['\"][^'\"]+['\"]\s*인\s+[가-힣A-Za-z]", prompt)):
+        return {"mode": "tool", "tool": "filter_rows", "confidence": 0.88, **options}
+
+    # "<컬럼명> 순" — 단어 + "순" + 단어경계 = 정렬 의도. ("순살", "1순위" 등 단어 충돌 방지)
+    if _re_eq.search(r"[가-힣A-Za-z]{2,}\s+순(?:\s|$|으로|서)", prompt):
+        return {"mode": "tool", "tool": "sort_rows", "confidence": 0.85, **options}
+
+    # 컬럼 선택(projection) — "X만 보여/추출", "X컬럼만", "X와 Y만"
+    # filter_rows의 "추출"보다 먼저 잡아야 한다 (조건 없이 컬럼 선택)
+    _PROJ_PATS = [
+        r"[가-힣A-Za-z]{2,}\s*만\s+(?:보여|추출|선택|골라|표시)",
+        r"[가-힣A-Za-z]{2,}\s*컬럼만",
+        r"[가-힣A-Za-z]{2,}\s*열만",
+        # 다중 컬럼 + "만" — "X와 Y만", "X, Y, Z만"
+        r"[가-힣A-Za-z]{2,}\s*(?:,|와|과|및)\s*[가-힣A-Za-z]{2,}.*?\s*만(?:\s|$)",
+    ]
+    if any(_re_eq.search(p, prompt) for p in _PROJ_PATS):
+        return {"mode": "tool", "tool": "select_columns", "confidence": 0.90, **options}
+
+    # ── 차트 의도가 명확하면 가장 먼저 처리 — 다른 intent/도구를 가로챔 ────
+    # ("월별 매출 추이를 라인 차트로" 같은 케이스에서 merge_union이 가져가는 문제 방지)
+    if options.get("needs_chart"):
+        return {"mode": "tool", "tool": "create_chart", "confidence": 0.92, **options}
+
     # ── intent 선행 라우팅 — 키워드 루프보다 먼저 처리 ────────────────────────
     # intent.py가 이미 merge 세부 분류를 완료한 경우, 키워드 룰이 덮어쓰지 못하게 막음
     if intent == "merge_union":
+        # 단, "X별 + 합계/평균/최대/최소" 동시 등장은 그룹 집계 의도가 더 강함.
+        # ("부서별 연봉 평균" 같은 케이스에서 merge_union이 가로채는 문제 방지)
+        # 예외: 명시적 통합 동사("합쳐/통합/묶어")가 prompt에 있으면 통합 의도가
+        #       명확하므로 가로채지 않고 merge_same_format으로 보낸다.
+        import re as _re_agg
+        _AGG_FUNCS = ("합계", "총합", "총액", "sum",
+                      "평균", "평균값", "mean", "avg",
+                      "최대", "최댓값", "max", "최소", "최솟값", "min",
+                      "개수", "건수", "count")
+        _MERGE_VERBS = ("통합", "합쳐", "합쳐서", "합쳐줘", "통합해",
+                        "묶어", "묶고", "묶기", "병합", "합치")
+        has_merge_verb = any(k in prompt for k in _MERGE_VERBS)
+        if (not has_merge_verb
+                and _re_agg.search(r"[\w가-힣]+별\s", prompt)
+                and any(k in prompt for k in _AGG_FUNCS)):
+            return {"mode": "tool", "tool": "aggregate_data", "confidence": 0.92, **options}
         return {"mode": "tool", "tool": "merge_same_format", "confidence": 0.88, **options}
     if intent == "merge_join":
-        return {"mode": "code", "tool": None, "confidence": 0.80, **options}
+        # 키 기반 join — merge_files가 공통 컬럼 자동 감지로 처리
+        return {"mode": "tool", "tool": "merge_files", "confidence": 0.85, **options}
 
     # ── 복합 조건 체크 (단일 키워드 루프보다 반드시 먼저 실행) ──────────────────
 
@@ -135,12 +203,27 @@ def _rule_classify(prompt: str, intent: str) -> dict:
     if any(k in prompt for k in _CHART_KW) and any(k in prompt for k in _COL_KW):
         return {"mode": "tool", "tool": "create_chart", "confidence": 0.86, **options}
 
-    # 통합/병합 + 평균 동시 → merge_same_format (aggregate_data 0.92보다 높게)
-    # "파일 통합 + 동일 표 항목 평균", "합쳐서 평균값으로" 같은 복합 요청 처리
-    _MERGE_KW = {"통합", "병합", "합치", "합쳐", "합산", "붙여", "모아"}
+    # 통합/병합 + 평균 동시 → merge_same_format (aggregate_data 0.92보다 높게).
+    # _MERGE_KW에 통합·합쳐·묶어 등 액션이 명시되면 사용자 의도가 명확하므로
+    # "X별" 그룹 패턴이 동시에 있어도 통합이 우선.
+    _MERGE_KW = {"통합", "병합", "합치", "합쳐", "합산", "붙여", "모아",
+                 "묶어", "묶고", "묶기", "묶어서", "쌓아", "이어붙여", "이어 붙여"}
     _AVG_KW   = {"평균", "평균값", "항목 평균", "동일 표", "항목별", "항목 기준", "mean", "avg"}
     if any(k in prompt for k in _MERGE_KW) and any(k in prompt for k in _AVG_KW):
         return {"mode": "tool", "tool": "merge_same_format", "confidence": 0.96, **options}
+
+    # 정렬 + 계산식 → code 모드. sort_rows는 단일 컬럼만 정렬 가능하므로
+    # "X 대비 Y 비율 순", "(A/B) 큰 순", "X - Y 차이 큰 순" 같은 파생 컬럼 정렬은
+    # LLM이 코드로 만들어야 한다.
+    import re as _re_calc
+    _has_sort_kw = any(k in prompt for k in _SORT_KW)
+    _has_calc = (
+        bool(_re_calc.search(r"\([^)]*[+\-*/][^)]*\)", prompt))          # (A/B), (A-B)
+        or bool(_re_calc.search(r"[가-힣A-Za-z]+\s*/\s*[가-힣A-Za-z]+", prompt))  # A/B
+        or any(k in prompt for k in ("대비", "비율", "차이", "차이가"))
+    )
+    if _has_sort_kw and _has_calc:
+        return {"mode": "code", "tool": None, "confidence": 0.78, **options}
 
     # 체이닝 먼저 감지 — filter 키워드 + sort 키워드가 동시에 있으면 filter_then_sort
     if any(k in prompt for k in _FILTER_KW) and any(k in prompt for k in _SORT_KW):

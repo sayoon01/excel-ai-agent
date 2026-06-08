@@ -1,6 +1,8 @@
 """AI 채팅 페이지."""
 from __future__ import annotations
 
+import time
+
 import pandas as pd
 import streamlit as st
 
@@ -19,6 +21,82 @@ from ui.quality_report import load_files_info
 if not st.session_state.current_chat_id:
     st.session_state.current_chat_id = new_chat_id()
 
+
+def _run_dsl_router(user_prompt: str, files_info: list[dict],
+                    last_result_info: dict | None) -> dict | None:
+    """DSL 라우터(LLM) + 인터프리터 실행. 결과 dict 반환 (JSON 직렬화 가능).
+
+    실패해도 None을 반환해 기존 흐름을 깨뜨리지 않는다.
+    """
+    try:
+        from core.routing.llm_router import route
+        from core.dsl import run_pipeline
+    except Exception:
+        return None
+
+    client, err = get_llm_client(intent="query")
+    if err or client is None:
+        return None
+
+    t0 = time.time()
+    try:
+        r = route(user_prompt, files_info, client, last_result_info=last_result_info)
+    except Exception as exc:
+        return {"intent": "error", "error": f"라우터 예외: {exc}",
+                "rt_ms": int((time.time() - t0) * 1000)}
+    rt_ms = int((time.time() - t0) * 1000)
+
+    result: dict = {
+        "intent":      r.intent,
+        "explanation": r.explanation,
+        "message":     r.message,
+        "suggested":   r.suggested,
+        "pipeline":    r.pipeline,
+        "error":       r.error,
+        "suggestion":  r.suggestion,
+        "rt_ms":       rt_ms,
+        "exec_ok":     None,
+        "exec_type":   None,
+        "exec_summary": None,
+        "exec_preview": None,    # dataframe head dict
+        "exec_path":   None,     # plot 경로
+        "exec_err":    None,
+        "exec_ms":     None,
+        "log":         None,
+    }
+
+    if not r.ok() or r.intent != "dsl" or not r.pipeline:
+        return result
+
+    t1 = time.time()
+    try:
+        res = run_pipeline(r.pipeline, files_info=files_info)
+    except Exception as exc:
+        result["exec_ok"]  = False
+        result["exec_err"] = f"인터프리터 예외: {exc}"
+        result["exec_ms"]  = int((time.time() - t1) * 1000)
+        return result
+    result["exec_ms"]      = int((time.time() - t1) * 1000)
+    result["exec_type"]    = res.get("type")
+    result["exec_summary"] = res.get("summary")
+    result["log"]          = res.get("log")
+    if res.get("type") == "error":
+        result["exec_ok"]  = False
+        result["exec_err"] = res.get("message")
+        return result
+    result["exec_ok"] = True
+    v = res.get("value")
+    if isinstance(v, pd.DataFrame):
+        head = v.head(50)
+        result["exec_preview"] = {
+            "columns": [str(c) for c in head.columns],
+            "rows":    head.astype(object).where(head.notna(), None).values.tolist(),
+            "shape":   [int(v.shape[0]), int(v.shape[1])],
+        }
+    elif res.get("type") == "plot":
+        result["exec_path"] = str(v) if v else None
+    return result
+
 _SUGGESTION_SYSTEM = (
     "너는 데이터 분석 어시스턴트야. "
     "방금 나눈 대화를 보고 사용자가 자연스럽게 이어서 할 만한 후속 작업을 정확히 3개 제안해. "
@@ -26,7 +104,6 @@ _SUGGESTION_SYSTEM = (
     "- 한국어, 각 항목은 한 줄, 반드시 15자 이내 (버튼에 표시되므로 짧게)\n"
     "- 번호/기호/이모지 없이 줄바꿈으로만 구분\n"
     "- '~해줘' 형태의 짧은 명령형으로 작성 (예: '결측치 제거해줘', 'Unnamed 열 삭제해줘')\n"
-    "- 물음표·질문형('~까요?', '~될까요?', '~어떤') 절대 금지 — 명령형만\n"
     "- 파일은 이미 업로드되어 있으므로 파일 경로·로딩 방법을 묻는 제안 금지\n"
     "- 실제 데이터 작업(필터, 집계, 변환, 저장, 분석, 차트)에 관한 작업만"
 )
@@ -193,8 +270,10 @@ if prompt:
         _tool_label = {
             "get_row_count": "행 수 조회", "analyze_missing": "결측치 분석",
             "get_profile": "컬럼 프로파일", "aggregate_data": "집계",
+            "select_columns": "컬럼 추출",
             "filter_rows": "필터", "sort_rows": "정렬",
-            "merge_files": "파일 병합", "create_chart": "차트 생성",
+            "merge_files": "파일 병합", "merge_same_format": "동일 양식 통합",
+            "create_chart": "차트 생성",
         }.get(tool_name, tool_name)
 
         with st.spinner(f"🔧 {_tool_label} 실행 중..."):
@@ -219,7 +298,6 @@ if prompt:
             answer = f"도구 실행 오류: {tool_result.get('message', '알 수 없는 오류')}"
             exec_res = ExecutionResult(success=False, error=answer)
         else:
-            import datetime
             summary = tool_result.get("summary", "")
             label   = tool_result.get("label", "결과")
             answer  = f"**{label}**\n\n{summary}" if summary else f"**{label}**"
@@ -227,30 +305,37 @@ if prompt:
             rval    = tool_result.get("value")
             rdf     = rval if rtype == "dataframe" and isinstance(rval, pd.DataFrame) else None
 
-            saved: list[str] = []
-            needs_export = state.task_config.get("needs_export", False)
-            needs_chart  = state.task_config.get("needs_chart", False)
+            from pathlib import Path as _Path
+            from services.result_naming import result_filename, saved_files_hint
 
-            # DataFrame 저장 — needs_export 시 강조, 아니면 조용히 자동 저장
-            if rdf is not None:
-                ts    = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                fname = f"result_{ts}.xlsx"
-                dest  = RESULT_DIR / fname
+            saved: list[str] = list(tool_result.get("saved_files") or [])
+            needs_export = state.task_config.get("needs_export", False)
+            needs_chart = state.task_config.get("needs_chart", False)
+
+            # 저장 요청(needs_export)일 때만 xlsx 저장 — export_data는 이미 saved에 포함
+            if rdf is not None and not saved and needs_export:
+                fname = result_filename(prompt=prompt, label=label, intent=state.intent)
+                dest = RESULT_DIR / fname
                 rdf.to_excel(dest, index=False)
                 saved.append(fname)
-                if needs_export:
-                    answer += f"\n\n💾 **{fname}** 으로 저장되었습니다. 아래 버튼으로 다운로드하세요."
 
-            # needs_chart + DataFrame 결과가 있으면 집계 결과로 차트 자동 생성
+            # 차트 전용 도구 또는 plot 결과
+            if rtype == "plot" and rval:
+                chart_name = _Path(str(rval)).name
+                if chart_name not in saved:
+                    saved.append(chart_name)
+
+            # 필터·집계 등 + 차트 동시 요청
             if needs_chart and rdf is not None:
                 from core.tools.chart_tools import create_chart as _create_chart_fn
                 _chart_res = _create_chart_fn(files_info=files_info, prompt=prompt)
                 if _chart_res.get("type") == "plot":
-                    from pathlib import Path as _Path
                     _cp = _Path(str(_chart_res["value"]))
-                    if _cp.exists():
+                    if _cp.exists() and _cp.name not in saved:
                         saved.append(_cp.name)
-                        answer += f"\n\n📊 차트도 함께 생성했습니다."
+
+            if saved:
+                answer += saved_files_hint(saved)
 
             exec_res = ExecutionResult(
                 success=True,
@@ -279,9 +364,18 @@ if prompt:
                 except Exception:
                     pass
 
+        # ── DSL 라우터 (shadow 실행) — 사용자에게 비교용으로 함께 표시 ──
+        with st.spinner("🧪 DSL 라우터 비교 중..."):
+            _dsl_res = _run_dsl_router(prompt, files_info, last_result_info)
+
         msg_idx = len(st.session_state.messages)
         state = parse_llm_response(state, answer)
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+        _msg: dict = {"role": "assistant", "content": answer,
+                      "pipeline": state.to_dict()}
+        if _dsl_res:
+            _msg["dsl_result"] = _dsl_res
+            st.session_state.dsl_results[msg_idx] = _dsl_res
+        st.session_state.messages.append(_msg)
         st.session_state.pipeline_states[msg_idx] = state
         st.session_state.exec_results[msg_idx] = exec_res
         if exec_res.success and exec_res.result_df is not None:
@@ -335,8 +429,17 @@ if prompt:
         # ── Step 5: 응답 파싱 ──
         state = parse_llm_response(state, response)
 
+        # ── DSL 라우터 (shadow 실행) ──
+        with st.spinner("🧪 DSL 라우터 비교 중..."):
+            _dsl_res = _run_dsl_router(prompt, files_info, last_result_info)
+
         msg_idx = len(st.session_state.messages)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        _msg: dict = {"role": "assistant", "content": response,
+                      "pipeline": state.to_dict()}
+        if _dsl_res:
+            _msg["dsl_result"] = _dsl_res
+            st.session_state.dsl_results[msg_idx] = _dsl_res
+        st.session_state.messages.append(_msg)
         st.session_state.pipeline_states[msg_idx] = state
         # 세션 히스토리 기록
         st.session_state.session_history.record(

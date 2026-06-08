@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from core.chat_history import load_chat, new_chat_id
+from core.execution.pipeline import PipelineState
 from core.llm.llm_client import GEMINI_MODELS, OPENAI_MODELS, LLMClient, get_client
 
 # 코드 생성이 필요한 의도 — 코드 특화 모델로 라우팅
@@ -30,6 +32,7 @@ _DEFAULTS: dict = {
     "llm_max_tokens": 4096,
     "compare_results": None,
     "pipeline_states": {},   # {msg_idx: PipelineState}
+    "dsl_results":     {},   # {msg_idx: {intent, pipeline, exec, summary, dt_ms, error, ...}}
 }
 
 
@@ -41,6 +44,69 @@ def init_session_state() -> None:
     if "session_history" not in st.session_state:
         from core.execution.pipeline import SessionHistory
         st.session_state.session_history = SessionHistory()
+
+
+def restore_chat(chat_id: str) -> bool:
+    """디스크에서 채팅을 로드해 세션 상태에 복원.
+
+    messages, pipeline_states를 채우고 부수 상태(exec_results, last_result,
+    suggestions, session_history)를 초기화한다. chat_id가 비었거나 파일이
+    없으면 False 반환.
+    """
+    if not chat_id:
+        return False
+    loaded = load_chat(chat_id)
+    if not loaded:
+        return False
+
+    st.session_state.messages         = loaded
+    st.session_state.current_chat_id  = chat_id
+    st.session_state.exec_results     = {}
+    st.session_state.last_result      = None
+    st.session_state.result_history   = []
+    st.session_state.last_intent      = None
+    st.session_state.suggestions      = {}
+
+    from core.execution.pipeline import SessionHistory
+    st.session_state.session_history = SessionHistory()
+
+    restored: dict[int, PipelineState] = {}
+    restored_dsl: dict[int, dict] = {}
+    for i, m in enumerate(loaded):
+        if not isinstance(m, dict):
+            continue
+        p = m.get("pipeline")
+        if p:
+            try:
+                restored[i] = PipelineState.from_dict(p)
+            except Exception:
+                pass
+        # DSL 결과는 dict(JSON)로 그대로 보관 — dataframe은 직렬화 불가하므로
+        # exec.value(table dict) / log / 메타만 저장됨 (Step 2.3.4 참조)
+        d = m.get("dsl_result")
+        if d and isinstance(d, dict):
+            restored_dsl[i] = d
+    st.session_state.pipeline_states = restored
+    st.session_state.dsl_results = restored_dsl
+    return True
+
+
+def start_new_chat() -> str:
+    """새 채팅 ID를 발급하고 세션을 초기화한다. 새 chat_id 반환."""
+    cid = new_chat_id()
+    st.session_state.messages         = []
+    st.session_state.current_chat_id  = cid
+    st.session_state.exec_results     = {}
+    st.session_state.pipeline_states  = {}
+    st.session_state.dsl_results      = {}
+    st.session_state.last_result      = None
+    st.session_state.result_history   = []
+    st.session_state.last_intent      = None
+    st.session_state.suggestions      = {}
+
+    from core.execution.pipeline import SessionHistory
+    st.session_state.session_history = SessionHistory()
+    return cid
 
 
 def get_llm_client(

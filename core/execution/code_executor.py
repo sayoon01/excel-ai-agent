@@ -6,7 +6,6 @@ import io
 import re
 import signal
 import traceback
-import uuid
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,7 +22,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from core.tools.font_setup import setup_korean_font
 from services.file_manager import RESULT_DIR, list_files, read_file
+from services.result_naming import code_chart_filename
+
+setup_korean_font()
 
 _CORRECTION_SYSTEM = (
     "Python/pandas 코드 디버거입니다. 오류를 수정한 코드 블록만 반환하세요. 설명 불필요.\n"
@@ -211,6 +214,7 @@ def execute(
     last_result: pd.DataFrame | None = None,
     selected_sheets: dict[str, str] | None = None,
     selected_files: list[str] | None = None,
+    save_hint: str = "",
 ) -> ExecutionResult:
     code = _strip_preinjected_imports(code)
     violations = _validate_code(code)
@@ -272,10 +276,12 @@ def execute(
         if result_type == "dataframe" and isinstance(result_value, pd.DataFrame):
             result_df = result_value
         elif result_type == "plot" and hasattr(result_value, "savefig"):
-            chart_path = RESULT_DIR / f"chart_{uuid.uuid4().hex[:8]}.png"
+            chart_name = code_chart_filename(save_hint)
+            chart_path = RESULT_DIR / chart_name
             result_value.savefig(chart_path, dpi=150, bbox_inches="tight")
             plt.close(result_value)
             result_value = str(chart_path)
+            saved_files.append(chart_name)
     elif isinstance(result_raw, pd.DataFrame):
         result_type = "dataframe"
         result_df = result_raw
@@ -288,14 +294,6 @@ def execute(
         result_type = "number"
     elif isinstance(result_raw, str):
         result_type = "string"
-
-    # save() 없이 result만 있으면 results/에 자동 저장 (사이드바·다운로드 버튼 연동)
-    if result_df is not None and not saved_files:
-        auto_name = f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        auto_dest = RESULT_DIR / auto_name
-        result_df.to_excel(auto_dest, index=False)
-        _apply_xlsx_formatting(auto_dest, result_df)
-        saved_files.append(auto_name)
 
     return ExecutionResult(
         success=True,
@@ -339,7 +337,11 @@ def execute_with_retry(
     client가 None이면 단순 execute()와 동일하게 동작한다.
     개선: 수정 프롬프트에 실제 파일 컬럼 정보를 포함해 컬럼명 오류 자동 수정.
     """
-    _exec_kw = {"selected_sheets": selected_sheets, "selected_files": selected_files}
+    _exec_kw = {
+        "selected_sheets": selected_sheets,
+        "selected_files": selected_files,
+        "save_hint": original_question,
+    }
     result = execute(code, last_result=last_result, **_exec_kw)
     if result.success or client is None:
         return result

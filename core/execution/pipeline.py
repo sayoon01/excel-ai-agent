@@ -46,6 +46,20 @@ class StageMetrics:
             (self.ended_at - self.started_at).total_seconds() * 1000
         )
 
+    def to_dict(self) -> dict:
+        return {
+            "stage":       self.stage.value,
+            "duration_ms": self.duration_ms,
+            "details":     self.details,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "StageMetrics":
+        m = cls(stage=PipelineStage(d.get("stage", "intent")))
+        m.duration_ms = int(d.get("duration_ms", 0))
+        m.details     = dict(d.get("details", {}))
+        return m
+
 
 @dataclass
 class PipelineState:
@@ -100,6 +114,50 @@ class PipelineState:
             if s.stage == stage:
                 return s.duration_ms
         return 0
+
+    def to_dict(self) -> dict:
+        """채팅 영속화용 직렬화. thinking 패널 렌더링에 필요한 필드만 보존."""
+        return {
+            "user_prompt":             self.user_prompt,
+            "intent":                  self.intent,
+            "mode":                    self.mode,
+            "task_config":             self.task_config,
+            "persona_key":             self.persona_key,
+            "persona_name":            self.persona_name,
+            "system_prompt":           self.system_prompt,
+            "system_prompt_token_est": self.system_prompt_token_est,
+            "model_name":              self.model_name,
+            "provider":                self.provider,
+            "response_token_est":      self.response_token_est,
+            "generated_code":          self.generated_code,
+            "code_explanation":        self.code_explanation,
+            "has_code":                self.has_code,
+            "current_stage":           self.current_stage.value,
+            "stages":                  [s.to_dict() for s in self.stages],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PipelineState":
+        s = cls(user_prompt=d.get("user_prompt", ""))
+        s.intent                  = d.get("intent", "")
+        s.mode                    = d.get("mode", "code")
+        s.task_config             = dict(d.get("task_config", {}))
+        s.persona_key             = d.get("persona_key", "")
+        s.persona_name            = d.get("persona_name", "")
+        s.system_prompt           = d.get("system_prompt", "")
+        s.system_prompt_token_est = int(d.get("system_prompt_token_est", 0))
+        s.model_name              = d.get("model_name", "")
+        s.provider                = d.get("provider", "")
+        s.response_token_est      = int(d.get("response_token_est", 0))
+        s.generated_code          = d.get("generated_code", "")
+        s.code_explanation        = d.get("code_explanation", "")
+        s.has_code                = bool(d.get("has_code", False))
+        try:
+            s.current_stage = PipelineStage(d.get("current_stage", "intent"))
+        except ValueError:
+            s.current_stage = PipelineStage.INTENT
+        s.stages = [StageMetrics.from_dict(x) for x in d.get("stages", [])]
+        return s
 
 
 # ── 세션 수준 Tool 실행 히스토리 ──────────────────────────────────────────────

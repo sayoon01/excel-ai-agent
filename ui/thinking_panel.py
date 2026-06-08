@@ -10,6 +10,7 @@ _STAGE_LABELS: dict[PipelineStage, tuple[str, str]] = {
     PipelineStage.PERSONA:        ("Persona 결정",  "🎭"),
     PipelineStage.LLM_THINKING:   ("LLM 응답",      "🤖"),
     PipelineStage.EXECUTING:      ("도구 실행",      "🔧"),
+    PipelineStage.ERROR:          ("에러",          "❌"),
 }
 
 _TOOL_LABEL: dict[str, str] = {
@@ -17,6 +18,7 @@ _TOOL_LABEL: dict[str, str] = {
     "analyze_missing": "결측치 분석",
     "get_profile":     "컬럼 프로파일",
     "aggregate_data":  "집계 (합계·평균)",
+    "select_columns":  "컬럼 추출",
     "filter_rows":     "필터",
     "sort_rows":       "정렬",
     "merge_files":       "파일 병합",

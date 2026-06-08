@@ -6,7 +6,8 @@ import streamlit as st
 from services.export import to_markdown
 from services.file_manager import list_files, save_uploaded
 from core.llm.llm_client import GEMINI_MODELS, OPENAI_MODELS, list_ollama_models
-from core.chat_history import delete_chat, list_chats, load_chat, new_chat_id, save_chat, search_history
+from core.chat_history import delete_chat, list_chats, save_chat, search_history
+from ui.helpers import restore_chat, start_new_chat
 
 
 def render_sidebar() -> None:
@@ -76,16 +77,8 @@ def render_sidebar() -> None:
         with col_new:
             if st.button("새 대화", use_container_width=True):
                 save_chat(st.session_state.current_chat_id, st.session_state.messages)
-                st.session_state.messages = []
-                st.session_state.exec_results = {}
-                st.session_state.pipeline_states = {}
-                st.session_state.last_result = None
-                st.session_state.result_history = []
-                st.session_state.last_intent = None
-                st.session_state.suggestions = {}
-                st.session_state.current_chat_id = new_chat_id()
-                from core.execution.pipeline import SessionHistory
-                st.session_state.session_history = SessionHistory()
+                cid = start_new_chat()
+                st.query_params["chat"] = cid
                 st.rerun()
         with col_exp:
             if st.session_state.get("messages"):
@@ -130,18 +123,15 @@ def render_sidebar() -> None:
                     if st.button(label, key=f"chat_{chat['id']}", use_container_width=True):
                         if not is_active:
                             save_chat(st.session_state.current_chat_id, st.session_state.messages)
-                            st.session_state.messages = load_chat(chat["id"])
-                            st.session_state.current_chat_id = chat["id"]
-                            st.session_state.exec_results = {}
-                            st.session_state.last_result = None
-                            st.session_state.suggestions = {}
+                            if restore_chat(chat["id"]):
+                                st.query_params["chat"] = chat["id"]
                             st.rerun()
                 with col_d:
                     if st.button("✕", key=f"del_chat_{chat['id']}", help="삭제"):
                         delete_chat(chat["id"])
                         if is_active:
-                            st.session_state.messages = []
-                            st.session_state.current_chat_id = new_chat_id()
+                            cid = start_new_chat()
+                            st.query_params["chat"] = cid
                         st.rerun()
 
         # ── 분석 히스토리 검색 ────────────────────────────────────────────────

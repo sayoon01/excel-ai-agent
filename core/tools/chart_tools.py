@@ -1,35 +1,18 @@
 """차트 생성 도구."""
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
 import pandas as pd
 
+from core.tools.font_setup import setup_korean_font
 from services.file_manager import RESULT_DIR, read_file
+from services.result_naming import chart_filename
 
-# ── 한국어 폰트 설정 ──────────────────────────────────────────────────────────
-
-def _setup_korean_font() -> None:
-    candidates = [
-        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-        "/usr/share/fonts/truetype/nanum/NanumSquareRoundB.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    ]
-    for path in candidates:
-        if Path(path).exists():
-            prop = fm.FontProperties(fname=path)
-            plt.rcParams["font.family"] = prop.get_name()
-            plt.rcParams["axes.unicode_minus"] = False
-            return
-    plt.rcParams["axes.unicode_minus"] = False
-
-
-_setup_korean_font()
+setup_korean_font()
 
 
 # ── 공통 ──────────────────────────────────────────────────────────────────────
@@ -53,8 +36,9 @@ def _pick_category_col(df: pd.DataFrame) -> str | None:
     return None
 
 
-def _save_fig(fig: plt.Figure) -> str:
-    path = RESULT_DIR / f"chart_{uuid.uuid4().hex[:8]}.png"
+def _save_fig(fig: plt.Figure, chart_type: str, title: str, prompt: str = "") -> str:
+    name = chart_filename(chart_type, title, prompt=prompt)
+    path = RESULT_DIR / name
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return str(path)
@@ -323,13 +307,17 @@ def create_chart(files_info: list[dict], prompt: str = "", **kwargs) -> dict:
             label = f"{chart_type.upper()} 차트 — {title}"
             summary = f"{x_col} 기준 {series_info} {chart_type} 차트 생성 완료"
 
-        path = _save_fig(fig)
+        path = _save_fig(fig, chart_type, title, prompt=prompt)
     except Exception as exc:
         return {"type": "error", "message": f"차트 생성 오류: {exc}"}
+
+    fname = Path(path).name
+    summary = f"{summary} → **{fname}**"
 
     return {
         "type": "plot",
         "value": path,
         "label": label,
         "summary": summary,
+        "saved_files": [fname],
     }

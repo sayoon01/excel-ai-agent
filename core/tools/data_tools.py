@@ -32,6 +32,19 @@ def _pick_category_cols(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
 
 
+# 컬럼 hint 끝에 붙는 조사 — _infer_col 호출 전 떼어내 매칭률을 높임
+_PARTICLES = ("으로는", "에는", "에서", "으로", "이라는", "이라",
+              "은", "는", "이", "가", "을", "를", "에", "의", "로", "과", "와")
+
+
+def _strip_particle(s: str) -> str:
+    s = s.strip()
+    for p in _PARTICLES:
+        if s.endswith(p) and len(s) > len(p):
+            return s[: -len(p)]
+    return s
+
+
 # LLM 컬럼 매핑 캐시 — (frozenset(컬럼목록), hint) → 컬럼명
 _llm_col_cache: dict[tuple, str | None] = {}
 
@@ -40,6 +53,7 @@ def _infer_col(
     df: pd.DataFrame,
     hint: str,
     numeric_only: bool = False,
+    text_only: bool = False,
     llm_client=None,
 ) -> str | None:
     """프롬프트 힌트에서 가장 유사한 컬럼명 추측.
@@ -49,10 +63,19 @@ def _infer_col(
     2. 편집거리 1 이하: 오타 허용
     3. LLM 매칭: 실제 컬럼 목록을 LLM에 넘겨 의미 기반 매핑 (client 있을 때)
     → 하드코딩된 동의어 사전 없음 — 어떤 도메인 파일이든 동작
+
+    text_only=True 시 텍스트 컬럼만 candidates로. 단 같은 이름의
+    텍스트 컬럼이 없으면 fallback으로 전체 컬럼에서 재시도해 빈손 방지.
     """
     h = hint.lower().strip()
-    candidates = [c for c in df.columns
-                  if not numeric_only or pd.api.types.is_numeric_dtype(df[c])]
+    if text_only:
+        candidates = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
+        # fallback: text 매칭이 없으면 전체 컬럼으로 재시도
+        if not candidates:
+            candidates = list(df.columns)
+    else:
+        candidates = [c for c in df.columns
+                      if not numeric_only or pd.api.types.is_numeric_dtype(df[c])]
 
     # 1. 문자열 포함 (대소문자 무시)
     for col in candidates:
@@ -227,6 +250,76 @@ def _parse_date_range(prompt: str) -> tuple["dt.datetime | None", "dt.datetime |
     return start, end
 
 
+# ── 컬럼 선택 ────────────────────────────────────────────────────────────────
+
+# "X만", "X와 Y만 보여줘", "이름, 연봉, 부서 컬럼" 같은 표현에서 컬럼 추출.
+# select_columns 라우팅과 함께 쓰임.
+_SELECT_NOISE = {
+    "보여줘", "보여", "추출", "추출해줘", "추출해", "선택", "선택해", "골라",
+    "표시", "표시해", "노출", "리스트", "list",
+    "컬럼", "컬럼만", "열", "열만", "열로",
+    "그리고", "그 외", "외에", "외", "포함",
+}
+
+
+def select_columns(
+    files_info: list[dict],
+    prompt: str = "",
+    **kwargs,
+) -> dict:
+    """프롬프트에 명시된 컬럼만 추출(projection).
+
+    지원 패턴:
+      - "X만 보여줘", "X 컬럼만"
+      - "X, Y, Z 컬럼", "X와 Y만"
+      - "이름, 부서, 연봉 만"
+
+    Returns:
+        {"type": "dataframe", "value": pd.DataFrame, "label": str}
+    """
+    df = _load_df(files_info, last_result=kwargs.get("last_result"))
+    if df is None:
+        return {"type": "error", "message": "파일을 읽을 수 없습니다."}
+
+    llm_client = kwargs.get("llm_client")
+
+    # 1) 명시 컬럼 토큰 — 콤마·"와"·"과" 구분자로 분할 후 _infer_col
+    #    "X만/X컬럼만"의 "만/컬럼만"은 잡음. 조사도 제거.
+    tokens: list[str] = []
+    for raw in re.split(r"[,\s]+|와\s+|과\s+|및\s+", prompt):
+        tok = _strip_particle(raw.strip())
+        # 어미 정리: "비목분류만" → "비목분류", "당년도집행을" → "당년도집행"
+        tok = re.sub(r"(만|만을|만은|만이|을|를|이|가)$", "", tok)
+        if not tok or len(tok) < 2:
+            continue
+        if tok.lower() in _SELECT_NOISE:
+            continue
+        tokens.append(tok)
+
+    selected: list[str] = []
+    for tok in tokens:
+        cand = _infer_col(df, tok, llm_client=llm_client)
+        if cand is not None and cand not in selected:
+            selected.append(cand)
+
+    if not selected:
+        return {
+            "type": "error",
+            "message": "추출할 컬럼을 찾지 못했습니다. 예: '비목분류만 보여줘', '이름, 연봉 컬럼'",
+        }
+
+    result = df[selected].copy().reset_index(drop=True)
+    return {
+        "type": "dataframe",
+        "value": result,
+        "label": "컬럼 추출",
+        "summary": (
+            f"{len(df.columns)}컬럼 → {len(selected)}컬럼 ({len(result):,}행). "
+            f"선택: {', '.join(map(str, selected))}"
+        ),
+    }
+
+
 # ── 집계 ─────────────────────────────────────────────────────────────────────
 
 def aggregate_data(
@@ -270,35 +363,79 @@ def aggregate_data(
 
     llm_client = kwargs.get("llm_client")
 
-    # ── groupby 컬럼 감지 — "X별" 패턴 ──────────────────────────────────────
+    # ── groupby 컬럼 감지 — "X별" 패턴 (텍스트 컬럼 우선) ───────────────────
     _groupby_pat = re.search(r"([\w가-힣]+)별", prompt)
     group_col: str | None = None
     group_hint: str = ""
     if _groupby_pat:
         group_hint = _groupby_pat.group(1)
-        group_col = _infer_col(df, group_hint, llm_client=llm_client)
-        # 감지된 컬럼이 수치형이면 groupby 대상으로 부적합 → 무시
+        group_col = _infer_col(df, group_hint, text_only=True, llm_client=llm_client)
         if group_col and pd.api.types.is_numeric_dtype(df[group_col]):
             group_col = None
-        # 못 찾으면 → 첫 번째 카테고리 컬럼으로 fallback
         if group_col is None:
             cat_cols = _pick_category_cols(df)
             if cat_cols:
                 group_col = cat_cols[0]
                 group_hint = f"{group_hint}(→{group_col})"
 
+    # ── 대상 값 컬럼 추출 — prompt에 명시된 수치 컬럼만 집계 ─────────────────
+    # "비목분류별 당년도집행 합계" → 모든 수치 컬럼이 아니라 '당년도집행' 하나만.
+    # 명시된 컬럼이 없으면 기존처럼 모든 수치 컬럼 (전체 집계).
+    _AGG_FUNC_KW = {
+        "합계","총합","총액","sum",
+        "평균","평균값","mean","avg",
+        "최대","최댓값","max","최소","최솟값","min",
+        "개수","건수","count",
+        "그룹","group","기준","별로","별",
+    }
+    target_cols: list[str] = []
+    # 1) 수치 컬럼명이 prompt에 직접 substring으로 등장
+    #    group_hint(예: "비용명별"의 "비용명")는 그룹 키 단서이므로 값 컬럼에서 제외.
+    _exclude_hints = {group_hint.split("(")[0]} if group_hint else set()
+    for c in numeric_cols:
+        if c == group_col:
+            continue
+        if str(c) in _exclude_hints:
+            continue
+        if str(c).lower() in p:
+            target_cols.append(c)
+    # 2) 토큰 단위 _infer_col — 1단계와 별개로 항상 시도. 컬럼명이 정확하지 않은
+    #    힌트(예: "실행예산"이라는 단어가 prompt엔 있는데 컬럼은 "실행예산_합계"
+    #    뿐인 경우)에서 빠진 컬럼을 보강.
+    for tok in re.findall(r"[\w가-힣]{2,}", prompt):
+        tok2 = _strip_particle(tok)
+        tok2_l = tok2.lower()
+        if tok2_l in _AGG_FUNC_KW or tok2_l.endswith("별"):
+            continue
+        if group_col and tok2 == group_col:
+            continue
+        if tok2 in _exclude_hints:
+            continue
+        # 이미 1단계에서 잡힌 컬럼은 스킵 (속도)
+        if any(tok2 in str(c) or str(c) in tok2 for c in target_cols):
+            continue
+        cand = _infer_col(df, tok2, numeric_only=True, llm_client=llm_client)
+        if cand and cand != group_col and cand not in target_cols:
+            target_cols.append(cand)
+    # 3) 그래도 없으면 모든 수치 컬럼
+    agg_cols = target_cols if target_cols else [c for c in numeric_cols if c != group_col]
+    cols_note = ""
+    if target_cols:
+        cols_note = f" — 컬럼: {', '.join(map(str, target_cols))}"
+
     if group_col:
         # 그룹별 집계
-        pandas_agg = {v: v for v in set(agg_map.values())}  # sum/mean/max/min/count
+        pandas_agg = {v: v for v in set(agg_map.values())}
         label_map  = {v: k for k, v in agg_map.items()}
 
-        grouped = df.groupby(group_col)[numeric_cols].agg(list(pandas_agg.keys()))
+        grouped = df.groupby(group_col)[agg_cols].agg(list(pandas_agg.keys()))
         grouped.columns = [
             f"{col}_{label_map.get(fn, fn)}"
             for col, fn in grouped.columns
         ]
         result = grouped.reset_index()
-        result = result.sort_values(result.columns[1], ascending=False)
+        if len(result.columns) > 1:
+            result = result.sort_values(result.columns[1], ascending=False)
 
         inferred_note = f" ('{group_hint}' → '{group_col}' 컬럼 사용)" if "→" in group_hint else ""
         return {
@@ -307,13 +444,13 @@ def aggregate_data(
             "label": f"{group_col}별 집계",
             "summary": (
                 f"{group_col} 기준 {len(result)}개 그룹, "
-                f"{'·'.join(agg_map.keys())} 집계 완료{inferred_note}"
+                f"{'·'.join(agg_map.keys())} 집계 완료{inferred_note}{cols_note}"
             ),
         }
 
     # ── 단순 집계 (groupby 없음) ──────────────────────────────────────────────
     rows = []
-    for col in numeric_cols:
+    for col in agg_cols:
         row: dict = {"컬럼": col}
         for label, func in agg_map.items():
             row[label] = getattr(df[col], func)()
@@ -328,7 +465,7 @@ def aggregate_data(
         "type": "dataframe",
         "value": result,
         "label": "집계 결과",
-        "summary": f"{len(numeric_cols)}개 수치 컬럼 {'·'.join(agg_map.keys())} 집계 완료",
+        "summary": f"{len(agg_cols)}개 수치 컬럼 {'·'.join(agg_map.keys())} 집계 완료{cols_note}",
     }
 
 
@@ -375,94 +512,181 @@ def filter_rows(
         df = df.nsmallest(n, sort_col) if asc else df.nlargest(n, sort_col)
         applied.append(f"{'하위' if asc else '상위'} {n}개 ({sort_col})")
 
-    # ── 2. 숫자 비교 ──────────────────────────────────────────────────────────
-    _num_patterns = [
-        (r"([\w가-힣]+)\s*(?:이|가|은|는)?\s*(>=|이상|≥)\s*(\d[\d,]*(?:\.\d+)?)", ">="),
-        (r"([\w가-힣]+)\s*(?:이|가|은|는)?\s*(<=|이하|≤)\s*(\d[\d,]*(?:\.\d+)?)", "<="),
-        (r"([\w가-힣]+)\s*(?:이|가|은|는)?\s*(>|초과|보다\s*큰|보다\s*많은)\s*(\d[\d,]*(?:\.\d+)?)", ">"),
-        (r"([\w가-힣]+)\s*(?:이|가|은|는)?\s*(<|미만|보다\s*작은|보다\s*적은)\s*(\d[\d,]*(?:\.\d+)?)", "<"),
-        (r"([\w가-힣]+)\s*(?:이|가|은|는)?\s*(==|=|같은|같음)\s*(\d[\d,]*(?:\.\d+)?)", "=="),
+    # ── 2. 숫자 비교 (한국어 어순 우선: 컬럼+조사 + 숫자 + 연산자) ────────────
+    # 영문식 "컬럼 op 값"도 보조 패턴으로 지원.
+    _OP_K = {
+        "이상": ">=", "≥": ">=", "이하": "<=", "≤": "<=",
+        "초과": ">",  "보다 큰": ">",  "보다 많은": ">",  "보다 높은": ">",
+        "미만": "<",  "보다 작은": "<", "보다 적은": "<", "보다 낮은": "<",
+    }
+    _NUM_KO_PAT = (
+        r"([\w가-힣]+?)(?:이|가|은|는|을|를)?\s+"
+        r"(\d[\d,]*(?:\.\d+)?)\s*"
+        r"(이상|이하|초과|미만|≥|≤|보다\s*큰|보다\s*많은|보다\s*높은|보다\s*작은|보다\s*적은|보다\s*낮은)"
+    )
+    _applied_masks: list[tuple[str, str, float]] = []  # 범위 중복 방지
+    for m in re.finditer(_NUM_KO_PAT, prompt):
+        col_hint = _strip_particle(m.group(1))
+        val      = float(m.group(2).replace(",", ""))
+        kw       = re.sub(r"\s+", " ", m.group(3))
+        op       = _OP_K.get(kw, ">=")
+        col = _infer_col(df, col_hint, llm_client=llm_client)
+        if not col or not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        # 컬럼 hint가 숫자만으로 추론된 경우(예: 범위의 두 번째 숫자) — 직전 컬럼 재사용
+        if col_hint.isdigit() and _applied_masks:
+            col = _applied_masks[-1][0]
+        mask = {
+            ">=": df[col] >= val, "<=": df[col] <= val,
+            ">":  df[col] >  val, "<":  df[col] <  val,
+        }[op]
+        df = df[mask]
+        _applied_masks.append((col, op, val))
+        applied.append(f"{col} {op} {val:,g}")
+
+    # 영문식 보조 — "컬럼 >= 1000"
+    _NUM_EN_PATS = [
+        (r"([\w가-힣]+?)\s*(>=|≥)\s*(\d[\d,]*(?:\.\d+)?)", ">="),
+        (r"([\w가-힣]+?)\s*(<=|≤)\s*(\d[\d,]*(?:\.\d+)?)", "<="),
+        (r"([\w가-힣]+?)\s*(>)\s*(\d[\d,]*(?:\.\d+)?)",   ">"),
+        (r"([\w가-힣]+?)\s*(<)\s*(\d[\d,]*(?:\.\d+)?)",   "<"),
     ]
-    for pattern, op in _num_patterns:
-        for m in re.finditer(pattern, prompt):
-            col_hint = m.group(1)
-            val_str  = m.group(3).replace(",", "")
+    for pat, op in _NUM_EN_PATS:
+        for m in re.finditer(pat, prompt):
+            col_hint = _strip_particle(m.group(1))
             col = _infer_col(df, col_hint, llm_client=llm_client)
-            if col and pd.api.types.is_numeric_dtype(df[col]):
-                val = float(val_str)
-                mask = {
-                    ">=": df[col] >= val, "<=": df[col] <= val,
-                    ">": df[col] > val,   "<": df[col] < val,
-                    "==": df[col] == val,
-                }[op]
-                df = df[mask]
-                applied.append(f"{col} {op} {val:,g}")
+            if not col or not pd.api.types.is_numeric_dtype(df[col]):
+                continue
+            val = float(m.group(3).replace(",", ""))
+            tag = f"{col} {op} {val:,g}"
+            if tag in applied:
+                continue
+            mask = {">=": df[col] >= val, "<=": df[col] <= val,
+                    ">":  df[col] >  val, "<":  df[col] <  val}[op]
+            df = df[mask]
+            applied.append(tag)
 
-    # ── 3. 문자열 포함/제외 ───────────────────────────────────────────────────
-    _inc_pat = re.search(
-        r"([\w가-힣]+)(?:에|에서|열|컬럼)?\s*['\"]?([\w가-힣A-Za-z0-9]+)['\"]?\s*(?:포함|contains?)",
-        prompt,
-    )
-    _exc_pat = re.search(
-        r"([\w가-힣]+)(?:에|에서|열|컬럼)?\s*['\"]?([\w가-힣A-Za-z0-9]+)['\"]?\s*(?:제외|exclude|빼|except)",
-        prompt,
-    )
-    for pat, include in [(_inc_pat, True), (_exc_pat, False)]:
-        if pat:
-            col = _infer_col(df, pat.group(1), llm_client=llm_client)
-            keyword = pat.group(2)
-            if col and df[col].dtype == object:
-                mask = df[col].astype(str).str.contains(keyword, na=False)
-                df = df[mask] if include else df[~mask]
-                word = "포함" if include else "제외"
-                applied.append(f"{col} {word} '{keyword}'")
+    # ── 3. 문자열 포함/제외 — "들어간/들어있는/포함된/포함" ────────────────────
+    # 키워드가 따옴표 안에 있을 때 우선 추출 → 조사 흡수 방지
+    _INC_KW = r"(?:포함|들어간|들어있|들어가|있는|포함된|contains?)"
+    _EXC_KW = r"(?:제외|exclude|빼|except)"
+    _STR_PATS = [
+        # "비목분류에 '운영'이 들어간" — 따옴표 명시
+        (r"([\w가-힣]+?)(?:에|에서|에는)?\s*['\"]([^'\"]+?)['\"](?:이|가|은|는)?\s*" + _INC_KW, True),
+        # 따옴표 없는 형태 — "비용명에 회의 포함"
+        (r"([\w가-힣]+?)(?:에|에서|에는)?\s+([\w가-힣A-Za-z0-9]+?)(?:이|가|은|는)?\s*" + _INC_KW, True),
+        # 제외
+        (r"([\w가-힣]+?)(?:에|에서|에는)?\s*['\"]([^'\"]+?)['\"](?:이|가|은|는)?\s*" + _EXC_KW, False),
+        (r"([\w가-힣]+?)(?:에|에서|에는)?\s+([\w가-힣A-Za-z0-9]+?)(?:이|가|은|는)?\s*" + _EXC_KW, False),
+    ]
+    _str_applied: set[tuple[str, str, bool]] = set()
+    for pat, include in _STR_PATS:
+        for m in re.finditer(pat, prompt):
+            col_hint = _strip_particle(m.group(1))
+            keyword  = m.group(2).strip("'\"")
+            # 텍스트 컬럼 우선 — "비용명"이 코드숫자(float)인 경우 진짜 텍스트 컬럼으로
+            col = _infer_col(df, col_hint, text_only=True, llm_client=llm_client)
+            if not col or pd.api.types.is_numeric_dtype(df[col]):
+                continue
+            key = (col, keyword, include)
+            if key in _str_applied:
+                continue
+            mask = df[col].astype(str).str.contains(keyword, na=False, regex=False)
+            df = df[mask] if include else df[~mask]
+            _str_applied.add(key)
+            applied.append(f"{col} {'포함' if include else '제외'} '{keyword}'")
 
-    # ── 4. 컬럼 간 비교 ───────────────────────────────────────────────────────
-    _col_cmp = re.search(
-        r"([\w가-힣]+)(?:이|가|은|는)?\s*(보다\s*큰|보다\s*높은|>\s*|>=\s*)([\w가-힣]+)",
-        prompt,
-    )
-    if _col_cmp:
-        ca = _infer_col(df, _col_cmp.group(1), llm_client=llm_client)
-        cb = _infer_col(df, _col_cmp.group(3), llm_client=llm_client)
-        if ca and cb and pd.api.types.is_numeric_dtype(df[ca]) and pd.api.types.is_numeric_dtype(df[cb]):
-            df = df[df[ca] > df[cb]]
-            applied.append(f"{ca} > {cb}")
+    # ── 4. 컬럼 간 비교 — 양쪽 어순 + "을/를 초과" 지원 ───────────────────────
+    # "A보다 B가 더 큰" / "B가 A보다 큰" / "A가 B를 초과한"
+    _COL_CMP_PATS = [
+        # A보다 B가 (더) 큰  → B > A
+        (r"([\w가-힣]+?)(?:보다)\s+([\w가-힣]+?)(?:이|가|은|는)?\s*(?:더\s*)?(큰|많은|높은|초과)", "B>A"),
+        (r"([\w가-힣]+?)(?:보다)\s+([\w가-힣]+?)(?:이|가|은|는)?\s*(?:더\s*)?(작은|적은|낮은|미만)", "B<A"),
+        # B가 A보다 (더) 큰  → B > A
+        (r"([\w가-힣]+?)(?:이|가|은|는)\s+([\w가-힣]+?)(?:보다)\s*(?:더\s*)?(큰|많은|높은|초과)", "A>B"),
+        (r"([\w가-힣]+?)(?:이|가|은|는)\s+([\w가-힣]+?)(?:보다)\s*(?:더\s*)?(작은|적은|낮은|미만)", "A<B"),
+        # A가 B를 초과/미만 — "당년도집행이 계획예산을 초과한" → A > B
+        (r"([\w가-힣]+?)(?:이|가|은|는)\s+([\w가-힣]+?)(?:을|를)\s*(초과|보다\s*큰|보다\s*많|보다\s*높)", "A>B"),
+        (r"([\w가-힣]+?)(?:이|가|은|는)\s+([\w가-힣]+?)(?:을|를)\s*(미만|보다\s*작|보다\s*적|보다\s*낮)", "A<B"),
+    ]
+    for pat, direction in _COL_CMP_PATS:
+        m = re.search(pat, prompt)
+        if not m:
+            continue
+        ca = _infer_col(df, _strip_particle(m.group(1)), llm_client=llm_client)
+        cb = _infer_col(df, _strip_particle(m.group(2)), llm_client=llm_client)
+        if not (ca and cb) or ca == cb: continue
+        if not (pd.api.types.is_numeric_dtype(df[ca]) and pd.api.types.is_numeric_dtype(df[cb])):
+            continue
+        if direction == "B>A":   df = df[df[cb] >  df[ca]]; tag = f"{cb} > {ca}"
+        elif direction == "B<A": df = df[df[cb] <  df[ca]]; tag = f"{cb} < {ca}"
+        elif direction == "A>B": df = df[df[ca] >  df[cb]]; tag = f"{ca} > {cb}"
+        else:                    df = df[df[ca] <  df[cb]]; tag = f"{ca} < {cb}"
+        applied.append(tag)
+        break  # 한 번만 적용
 
-    # ── 5. 결측치 제거 ────────────────────────────────────────────────────────
+    # ── 5. 결측치 — 전체 제거 / 특정 컬럼 비어있는 행 추출 ────────────────────
     if any(k in prompt for k in ["결측 제거", "빈칸 제거", "null 제거", "결측값 제거", "na 제거"]):
         before = len(df)
         df = df.dropna()
         applied.append(f"결측 제거 ({before - len(df)}행 삭제)")
 
+    # "컬럼이 비어있는/비었/공백/null/없는" → 해당 컬럼이 NA인 행만 남김
+    _NULL_PAT = (
+        r"([\w가-힣]+?)(?:이|가|은|는)\s*(?:값이?\s*)?"
+        r"(비어\s*있는|비어있|비었|공백|null|na|없는|없음)"
+    )
+    for m in re.finditer(_NULL_PAT, prompt, re.I):
+        col = _infer_col(df, _strip_particle(m.group(1)), llm_client=llm_client)
+        if not col:
+            continue
+        # 결측 + 빈 문자열 모두 처리
+        ser = df[col]
+        mask = ser.isna()
+        if ser.dtype == object:
+            mask = mask | ser.astype(str).str.strip().isin(["", "nan", "None"])
+        df = df[mask]
+        applied.append(f"{col} 비어있는 행")
+        break
+
     # ── 6. 숫자 같음 — "컬럼이 숫자인 것" ──────────────────────────────────────
     _num_eq = re.search(
-        r"([\w가-힣]+)(?:이|가|은|는)?\s+(\d[\d,]*(?:\.\d+)?)\s*인", prompt
+        r"([\w가-힣]+?)(?:이|가|은|는)\s+(\d[\d,]*(?:\.\d+)?)\s*인", prompt
     )
     if _num_eq:
-        col = _infer_col(df, _num_eq.group(1), llm_client=llm_client)
+        col = _infer_col(df, _strip_particle(_num_eq.group(1)), llm_client=llm_client)
         if col and pd.api.types.is_numeric_dtype(df[col]):
             val = float(_num_eq.group(2).replace(",", ""))
             df = df[df[col] == val]
             applied.append(f"{col} == {val:,g}")
 
-    # ── 7. 문자열 같음 — "컬럼이 값인", "컬럼 == 값" ──────────────────────────
+    # ── 7. 문자열 같음 — "컬럼이 '값'인", "컬럼 == 값" ────────────────────────
     _str_eq_pats = [
-        # "컬럼이 값인 것", "컬럼이 값인 행" — 논리를 끝까지 좁혀서 일치
-        r"([\w가-힣]+)\s+([\w가-힣A-Za-z0-9_\-\.]+?)(?=인\s*(?:것|행|항목|데이터)?(?:\s|$)|이다(?:\s|$))",
-        # "컬럼 = 값", "컬럼 == 값"
-        r"([\w가-힣]+)\s*(?:==|=)\s*['\"]?([\w가-힣A-Za-z0-9_\-\.]+)['\"]?",
+        # 따옴표 값 우선: "비목분류가 '인건비'인 행"
+        r"([\w가-힣]+?)(?:이|가|은|는)\s*['\"]([^'\"]+?)['\"]\s*(?:인|이다|와\s*같)",
+        # 따옴표 없음: "비목분류가 인건비인 행"
+        r"([\w가-힣]+?)(?:이|가|은|는)\s+([\w가-힣A-Za-z0-9_\-\.]+?)(?=인\s*(?:것|행|항목|데이터)?(?:\s|$)|이다(?:\s|$))",
+        # 영문식: "컬럼 = 값" / "컬럼 == 값"
+        r"([\w가-힣]+?)\s*(?:==|=)\s*['\"]?([\w가-힣A-Za-z0-9_\-\.]+)['\"]?",
     ]
     for _sep in _str_eq_pats:
         for m in re.finditer(_sep, prompt):
-            col_hint = m.group(1)
+            col_hint = _strip_particle(m.group(1))
             val = m.group(2).strip("'\"")
-            col = _infer_col(df, col_hint, llm_client=llm_client)
+            col = _infer_col(df, col_hint, text_only=True, llm_client=llm_client)
             if col is None or pd.api.types.is_numeric_dtype(df[col]):
                 continue
-            mask = df[col].astype(str) == val
-            tag = f"{col} == '{val}'"
-            if mask.sum() > 0 and tag not in applied:
+            # 정확 일치 우선, 없으면 부분 포함 fallback
+            #  ("인건비" → 실제 값 "내부인건비"처럼 부분 일치)
+            eq_mask  = df[col].astype(str) == val
+            sub_mask = df[col].astype(str).str.contains(val, na=False, regex=False)
+            if eq_mask.sum() > 0:
+                mask, tag = eq_mask, f"{col} == '{val}'"
+            elif sub_mask.sum() > 0:
+                mask, tag = sub_mask, f"{col} 포함 '{val}'"
+            else:
+                continue
+            if tag not in applied:
                 df = df[mask]
                 applied.append(tag)
 
@@ -505,20 +729,45 @@ def filter_rows(
 
 # ── 정렬 ──────────────────────────────────────────────────────────────────────
 
+_SORT_DESC_KW = (
+    "내림차순", "descending", "desc",
+    "큰 순", "큰순", "높은 순", "높은순", "많은 순", "많은순",
+    "내림", "역순", "감소",
+)
+_SORT_ASC_KW = (
+    "오름차순", "ascending", "asc",
+    "작은 순", "작은순", "낮은 순", "낮은순", "적은 순", "적은순",
+    "오름", "증가", "가나다순", "가나다 순",
+)
+# 방향 표현 정규식 (한국어 자연어 + 영문 — 멀티컬럼 패턴에서 사용)
+_DIRECTION_RE = (
+    r"오름차순|내림차순|ascending|descending|asc|desc|"
+    r"큰\s*순(?:서|으로)?|작은\s*순(?:서|으로)?|"
+    r"높은\s*순(?:서|으로)?|낮은\s*순(?:서|으로)?|"
+    r"많은\s*순(?:서|으로)?|적은\s*순(?:서|으로)?|"
+    r"가나다\s*순(?:서|으로)?"
+)
+
+
+def _direction_is_asc(word: str) -> bool:
+    w = re.sub(r"\s+", " ", word.lower().strip())
+    if any(k in w for k in _SORT_DESC_KW):
+        return False
+    return True
+
+
 def sort_rows(
     files_info: list[dict],
     prompt: str = "",
     **kwargs,
 ) -> dict:
-    """정렬. 멀티컬럼 정렬 지원.
+    """정렬. 멀티컬럼 + 한국어 방향어 지원.
 
     지원 패턴:
-      - 단일: "값 내림차순", "텍스트컬럼 오름차순"
-      - 멀티: "A컬럼 오름차순, B컬럼 내림차순"
-              "A ascending B descending"
-
-    Returns:
-        {"type": "dataframe", "value": pd.DataFrame, "label": str}
+      - 단일: "당년도집행 큰 순", "비목분류 가나다순", "값 내림차순"
+      - 멀티: "A컬럼 오름차순, B컬럼 내림차순", "A asc B desc"
+    방향 키워드: 내림차순/큰순/높은순/많은순/역순/감소,
+                 오름차순/작은순/낮은순/적은순/가나다순
     """
     df = _load_df(files_info, last_result=kwargs.get("last_result"))
     if df is None:
@@ -526,9 +775,9 @@ def sort_rows(
 
     llm_client = kwargs.get("llm_client")
 
-    # ── 멀티컬럼 패턴 감지 ────────────────────────────────────────────────────
+    # ── 멀티/단일 (컬럼+방향) 패턴 감지 ───────────────────────────────────────
     _multi_pat = re.findall(
-        r"([\w가-힣]+)\s*(오름차순|내림차순|ascending|descending|asc|desc)",
+        rf"([\w가-힣]+?)(?:\s*기준)?\s*({_DIRECTION_RE})",
         prompt, re.I,
     )
 
@@ -537,27 +786,49 @@ def sort_rows(
     used_hints: list[str] = []
 
     for col_hint, direction_word in _multi_pat:
+        col_hint = _strip_particle(col_hint)
+        # 방향어가 컬럼 위치에 들어온 경우 (예: "큰 순"이 col_hint로 잡힘) 스킵
+        if any(k in col_hint for k in ("순", "차순")):
+            continue
         col = _infer_col(df, col_hint, llm_client=llm_client)
-        if col:
-            asc = direction_word.lower() in ("오름차순", "ascending", "asc")
-            sort_cols.append(col)
-            sort_asc.append(asc)
-            used_hints.append(f"{col} {'오름↑' if asc else '내림↓'}")
+        if not col or col in sort_cols:
+            continue
+        asc = _direction_is_asc(direction_word)
+        sort_cols.append(col)
+        sort_asc.append(asc)
+        used_hints.append(f"{col} {'오름↑' if asc else '내림↓'}")
 
     if not sort_cols:
         # 멀티 패턴 없음 → 단일 컬럼 추론
-        default_asc = not ("내림차순" in prompt or "descending" in prompt.lower())
-        for col in df.columns:
-            if str(col).lower() in prompt.lower():
-                sort_cols = [col]
-                sort_asc  = [default_asc]
+        # 방향: 내림차순 키워드가 prompt에 있으면 desc, 아니면 asc 기본
+        default_asc = not any(k in prompt for k in _SORT_DESC_KW)
+
+        # 컬럼 매칭: 정확 일치(공백 단위) 우선 → 양방향 부분 매칭(_infer_col) → 첫 수치 컬럼
+        col = None
+        tokens = set(re.findall(r"[\w가-힣]+", prompt))
+        for c in df.columns:
+            if str(c) in tokens:
+                col = c
                 break
-        if not sort_cols:
+        if col is None:
+            # prompt에서 방향/공통어를 제거한 토큰으로 _infer_col
+            stripped = re.sub(_DIRECTION_RE, " ", prompt, flags=re.I)
+            stripped = re.sub(r"\b(기준|정렬|순으로|순)\b", " ", stripped)
+            for tok in re.findall(r"[\w가-힣]+", stripped):
+                tok = _strip_particle(tok)
+                if len(tok) < 2:
+                    continue
+                cand = _infer_col(df, tok, llm_client=llm_client)
+                if cand:
+                    col = cand
+                    break
+        if col is None:
             nums = _pick_numeric_cols(df)
-            fallback = nums[0] if nums else df.columns[0]
-            sort_cols = [fallback]
-            sort_asc  = [default_asc]
-        used_hints = [f"{sort_cols[0]} {'오름↑' if sort_asc[0] else '내림↓'}"]
+            col = nums[0] if nums else df.columns[0]
+
+        sort_cols = [col]
+        sort_asc  = [default_asc]
+        used_hints = [f"{col} {'오름↑' if default_asc else '내림↓'}"]
 
     result = df.sort_values(sort_cols, ascending=sort_asc).reset_index(drop=True)
     summary = ", ".join(used_hints)
@@ -781,13 +1052,14 @@ def export_data(
     """
     import datetime
     from services.file_manager import RESULT_DIR
+    from services.result_naming import export_filename
 
     df = last_result if isinstance(last_result, pd.DataFrame) else _load_df(files_info)
     if df is None:
         return {"type": "error", "message": "저장할 데이터가 없습니다."}
 
-    ts    = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    fname = f"export_{ts}.xlsx"
+    prompt = kwargs.get("prompt", "")
+    fname = export_filename(prompt=prompt)
     dest  = RESULT_DIR / fname
     df.to_excel(dest, index=False)
 

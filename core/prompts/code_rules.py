@@ -63,8 +63,8 @@ result = pd.DataFrame(rows)
 - 텍스트 설명 → `result = {"type": "string", "value": "분석 결과: 총 1,234건"}`
 - 차트 → `result = {"type": "plot", "value": fig}` (fig = plt.subplots()의 첫 번째 반환값)
 - 최종 결과는 반드시 `result = ...`에 저장 (print()만 쓰면 표·다운로드가 나오지 않음)
-- 파일명을 지정하려면 `result = df` 이후에 `save("파일명.xlsx")` 호출 (순서 중요: result 먼저, save 나중)
-  → save()를 생략하면 타임스탬프 파일명(result_YYYYMMDD_HHMMSS.xlsx)으로 자동 저장됨
+- 파일로 저장하려면 `result = df` 이후에 `save("파일명.xlsx")` 호출 (순서 중요: result 먼저, save 나중)
+  → save()를 생략하면 화면에만 표시되고, 채팅의 다운로드 버튼으로 받을 수 있음
 
 ### ⚠️ [CRITICAL] 파일 통합 — 반드시 구조 분석 후 판단
 
