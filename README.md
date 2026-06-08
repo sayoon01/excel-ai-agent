@@ -1,6 +1,7 @@
 # Excel AI Platform
 
 <img width="1408" height="2338" alt="image" src="https://github.com/user-attachments/assets/355c5062-8ed8-4b97-a948-36584a4282ae" />
+<img width="1536" height="1024" alt="ChatGPT Image 2026년 6월 8일 오후 01_54_37" src="https://github.com/user-attachments/assets/20606c5b-938f-488f-be5d-fd1a8cff2123" />
 
 엑셀·CSV 파일을 업로드하고 AI와 대화하면서 데이터를 분석·변환·병합하는 Streamlit 기반 대화형 앱입니다.
 
